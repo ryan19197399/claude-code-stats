@@ -12,12 +12,14 @@ A comprehensive analytics dashboard for [Claude Code](https://docs.anthropic.com
 - **Plan & Billing** -- Cost savings analysis vs. your subscription plan
 - **Insights** -- Tool usage, storage breakdown, plugins, todos, file snapshots
 
+![Dashboard Screenshot](docs/images/claude-code-stats-01.png)
+
 ## Quick Start
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/claude-stats.git
-   cd claude-stats
+   git clone https://github.com/AeternaLabsHQ/claude-code-stats.git
+   cd claude-code-stats
    ```
 
 2. **Create your configuration**
