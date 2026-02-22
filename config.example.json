@@ -1,0 +1,27 @@
+{
+  "language": "en",
+  "plan_history": [
+    {
+      "plan": "Pro",
+      "start": "2025-01-01",
+      "end": "2025-01-31",
+      "cost_eur": 18.00,
+      "cost_usd": 20.00,
+      "billing_day": null
+    },
+    {
+      "plan": "Max",
+      "start": "2025-02-01",
+      "end": null,
+      "cost_eur": 87.61,
+      "cost_usd": 93.00,
+      "billing_day": 1
+    }
+  ],
+  "migration": {
+    "enabled": false,
+    "dir": null,
+    "claude_dir_name": ".claude-windows",
+    "dot_claude_json_name": ".claude-windows.json"
+  }
+}
