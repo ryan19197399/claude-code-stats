@@ -73,7 +73,7 @@ else:
     MIGRATION_STATS_CACHE = None
     MIGRATION_HISTORY_JSONL = None
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 OUTPUT_DIR = Path(__file__).parent / "public"
 DASHBOARD_DATA = OUTPUT_DIR / "dashboard_data.json"
@@ -2772,7 +2772,19 @@ a:hover { text-decoration:underline; }
 .stat-card .label { font-size:11px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
 .stat-card .value { font-size:20px; font-weight:700; }
 .main-layout { display:grid; grid-template-columns:2fr 1fr; gap:0; max-width:1600px; margin:0 auto; }
-.chat-panel { padding:20px 24px; max-height:calc(100vh - 180px); overflow-y:auto; border-right:1px solid var(--border); }
+.chat-panel { padding:0 0 20px 0; max-height:calc(100vh - 180px); overflow-y:auto; border-right:1px solid var(--border); }
+.chat-toolbar { position:sticky; top:0; z-index:10; background:var(--bg); padding:10px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; }
+.chat-toolbar .filter-group { display:flex; gap:0; }
+.chat-toolbar .filter-btn { padding:5px 14px; font-size:12px; font-weight:600; border:1px solid var(--border); background:var(--bg2); color:var(--text2); cursor:pointer; transition:all 0.15s; }
+.chat-toolbar .filter-btn:first-child { border-radius:6px 0 0 6px; }
+.chat-toolbar .filter-btn:last-child { border-radius:0 6px 6px 0; }
+.chat-toolbar .filter-btn:not(:first-child) { border-left:0; }
+.chat-toolbar .filter-btn.active { background:var(--accent); color:white; border-color:var(--accent); }
+.chat-toolbar .filter-btn.active + .filter-btn { border-left-color:var(--accent); }
+.chat-toolbar .copy-btn { margin-left:auto; padding:5px 12px; font-size:12px; font-weight:600; border:1px solid var(--border); background:var(--bg2); color:var(--text2); cursor:pointer; border-radius:6px; transition:all 0.15s; display:flex; align-items:center; gap:4px; }
+.chat-toolbar .copy-btn:hover { background:var(--bg3); color:var(--text); }
+.chat-toolbar .copy-btn.copied { background:rgba(34,197,94,0.15); border-color:var(--green); color:var(--green); }
+.chat-messages { padding:20px 24px; }
 .msg { margin-bottom:16px; padding:12px 16px; border-radius:10px; }
 .msg.user { background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.25); border-left:4px solid var(--green); }
 .msg.assistant { background:var(--bg3); border:1px solid var(--border); border-left:4px solid var(--purple); }
@@ -2815,7 +2827,17 @@ a:hover { text-decoration:underline; }
 </div>
 <div class="stats-bar" id="statsBar"></div>
 <div class="main-layout">
-  <div class="chat-panel" id="chatPanel"></div>
+  <div class="chat-panel">
+    <div class="chat-toolbar">
+      <div class="filter-group">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="user">User</button>
+        <button class="filter-btn" data-filter="assistant">Agent</button>
+      </div>
+      <button class="copy-btn" id="copyBtn">&#128203; Copy</button>
+    </div>
+    <div class="chat-messages" id="chatPanel"></div>
+  </div>
   <div class="sidebar" id="sidebar"></div>
 </div>
 <script>
@@ -2893,6 +2915,44 @@ document.querySelectorAll('.msg-expand').forEach(el => {
 
 // Syntax highlighting
 document.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+
+// Role filter
+let activeFilter = 'all';
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    activeFilter = this.getAttribute('data-filter');
+    document.querySelectorAll('#chatPanel > .msg, #chatPanel > .marker').forEach(el => {
+      if (activeFilter === 'all') { el.style.display = ''; return; }
+      if (el.classList.contains('marker')) { el.style.display = 'none'; return; }
+      el.style.display = el.classList.contains(activeFilter) ? '' : 'none';
+    });
+  });
+});
+
+// Copy to clipboard
+document.getElementById('copyBtn').addEventListener('click', function() {
+  const btn = this;
+  const lines = [];
+  document.querySelectorAll('#chatPanel > .msg, #chatPanel > .marker').forEach(el => {
+    if (el.style.display === 'none') return;
+    if (el.classList.contains('marker')) {
+      lines.push('[' + el.textContent.trim() + ']');
+    } else {
+      const role = el.classList.contains('user') ? 'User' : 'Assistant';
+      const content = el.querySelector('.msg-content');
+      lines.push('--- ' + role + ' ---');
+      lines.push(content ? content.textContent.trim() : '');
+    }
+    lines.push('');
+  });
+  navigator.clipboard.writeText(lines.join('\\n')).then(() => {
+    btn.innerHTML = '&#10003; Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.innerHTML = '&#128203; Copy'; btn.classList.remove('copied'); }, 2000);
+  });
+});
 
 // Sidebar
 const sideEl = document.getElementById('sidebar');
