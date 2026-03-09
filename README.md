@@ -6,6 +6,7 @@ A comprehensive analytics dashboard for [Claude Code](https://docs.anthropic.com
 
 ## Features
 
+- **Time Range Filter** -- Global pill buttons (All / 7D / 30D / 90D / 1Y) to filter the entire dashboard by time period
 - **KPI Dashboard** -- Total API-equivalent cost, messages, sessions, output tokens
 - **Token & API Value** -- Daily costs, cumulative costs, model distribution
 - **Activity** -- Message patterns, hourly distribution, weekday distribution
@@ -37,9 +38,9 @@ A comprehensive analytics dashboard for [Claude Code](https://docs.anthropic.com
 
 4. **Open the dashboard**
    ```bash
-   open public/dashboard.html      # macOS
-   xdg-open public/dashboard.html  # Linux
-   start public/dashboard.html     # Windows
+   open public/index.html      # macOS
+   xdg-open public/index.html  # Linux
+   start public/index.html     # Windows
    ```
 
 ## Configuration
@@ -92,7 +93,7 @@ The script deduplicates sessions across both sources automatically.
 
 The script generates files in the `public/` directory:
 
-- `dashboard.html` -- Self-contained interactive dashboard (open in any browser)
+- `index.html` -- Self-contained interactive dashboard (open in any browser)
 - `dashboard_data.json` -- Raw aggregated data (for custom analysis)
 
 ## Automation
