@@ -45,7 +45,8 @@
     "hourly": "Tageszeit-Verteilung (Nachrichten)",
     "weekday": "Wochentags-Verteilung",
     "daily_sessions": "Sessions pro Tag",
-    "sessions_label": "Sessions"
+    "sessions_label": "Sessions",
+    "heatmap": "Aktivität"
   },
   "weekdays": ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
   "projects": {

@@ -45,7 +45,8 @@
     "hourly": "Time of Day Distribution (Messages)",
     "weekday": "Weekday Distribution",
     "daily_sessions": "Sessions per Day",
-    "sessions_label": "Sessions"
+    "sessions_label": "Sessions",
+    "heatmap": "Activity"
   },
   "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
   "projects": {

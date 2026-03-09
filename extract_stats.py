@@ -1465,6 +1465,20 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
 .plugin-status.active { background:rgba(34,197,94,0.2); color:var(--green); }
 .plugin-status.inactive { background:rgba(239,68,68,0.2); color:var(--red); }
 
+/* Activity Heatmap */
+.heatmap-container { margin-bottom:20px; }
+.heatmap-scroll { overflow-x:auto; }
+.heatmap-grid { display:flex; gap:2px; }
+.heatmap-col { display:flex; flex-direction:column; gap:2px; }
+.heatmap-cell { width:13px; height:13px; border-radius:2px; position:relative; }
+.heatmap-cell:hover::after { content:attr(data-tip); position:absolute; bottom:18px; left:50%; transform:translateX(-50%); background:var(--bg2); border:1px solid var(--border); padding:4px 8px; border-radius:4px; font-size:11px; white-space:nowrap; z-index:10; color:var(--text); pointer-events:none; }
+.heatmap-labels { display:flex; flex-direction:column; gap:2px; margin-right:4px; padding-top:18px; }
+.heatmap-labels span { height:13px; font-size:10px; color:var(--text2); line-height:13px; }
+.heatmap-legend { display:flex; align-items:center; gap:4px; margin-top:8px; justify-content:flex-end; font-size:11px; color:var(--text2); }
+.heatmap-legend .cell { width:13px; height:13px; border-radius:2px; }
+.heatmap-months { display:flex; font-size:10px; color:var(--text2); margin-bottom:2px; }
+.heatmap-months span { text-align:center; }
+
 @media (max-width:900px) {
   .chart-grid { grid-template-columns:1fr; }
   .kpi-grid { grid-template-columns:repeat(2,1fr); }
@@ -1514,6 +1528,25 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
   </div>
 
   <div class="tab-content" id="tab-activity">
+    <div class="chart-box heatmap-container">
+      <h3>__L_activity_heatmap__</h3>
+      <div class="heatmap-scroll">
+        <div id="heatmapMonths" class="heatmap-months"></div>
+        <div style="display:flex">
+          <div class="heatmap-labels"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div>
+          <div id="activityHeatmap" class="heatmap-grid"></div>
+        </div>
+      </div>
+      <div class="heatmap-legend">
+        <span>Less</span>
+        <div class="cell" style="background:var(--bg3)"></div>
+        <div class="cell" style="background:rgba(99,102,241,0.2)"></div>
+        <div class="cell" style="background:rgba(99,102,241,0.4)"></div>
+        <div class="cell" style="background:rgba(99,102,241,0.7)"></div>
+        <div class="cell" style="background:var(--accent)"></div>
+        <span>More</span>
+      </div>
+    </div>
     <div class="chart-grid full">
       <div class="chart-box"><h3>__L_activity_daily_messages__</h3><canvas id="chartDailyMsgs"></canvas></div>
     </div>
@@ -1966,6 +1999,60 @@ function renderCosts() {
   }
 }
 
+function renderHeatmap() {
+  const container = document.getElementById('activityHeatmap');
+  const monthsEl = document.getElementById('heatmapMonths');
+  if (!container) return;
+  const msgMap = {};
+  F.daily_messages.forEach(d => { msgMap[d.date] = d.messages; });
+  const today = new Date();
+  const startDate = new Date(today);
+  startDate.setDate(startDate.getDate() - (24 * 7) + 1);
+  while (startDate.getDay() !== 1) startDate.setDate(startDate.getDate() - 1);
+  let maxMsg = 0;
+  const td = new Date(startDate);
+  while (td <= today) { const k = td.toISOString().slice(0,10); maxMsg = Math.max(maxMsg, msgMap[k]||0); td.setDate(td.getDate()+1); }
+  let html = '';
+  const weeks = [];
+  const d = new Date(startDate);
+  let cw = [];
+  while (d <= today) {
+    const k = d.toISOString().slice(0,10);
+    const m = msgMap[k]||0;
+    let bg = 'var(--bg3)';
+    if (m > 0 && maxMsg > 0) {
+      const r = m/maxMsg;
+      if (r > 0.7) bg = 'var(--accent)';
+      else if (r > 0.4) bg = 'rgba(99,102,241,0.7)';
+      else if (r > 0.2) bg = 'rgba(99,102,241,0.4)';
+      else bg = 'rgba(99,102,241,0.2)';
+    }
+    cw.push('<div class="heatmap-cell" style="background:'+bg+'" data-tip="'+k+': '+m+' messages"></div>');
+    if (d.getDay()===0) { while(cw.length<7) cw.push('<div class="heatmap-cell" style="background:transparent"></div>'); weeks.push(cw); cw=[]; }
+    d.setDate(d.getDate()+1);
+  }
+  if (cw.length>0) { while(cw.length<7) cw.push('<div class="heatmap-cell" style="background:transparent"></div>'); weeks.push(cw); }
+  weeks.forEach(w => { html += '<div class="heatmap-col">'+w.join('')+'</div>'; });
+  container.innerHTML = html;
+  if (monthsEl) {
+    const months = [];
+    const md = new Date(startDate);
+    let lastMonth = -1, weekIdx = 0;
+    while (md <= today) {
+      if (md.getDay()===1) { if(md.getMonth()!==lastMonth) { months.push({idx:weekIdx,label:md.toLocaleString('default',{month:'short'})}); lastMonth=md.getMonth(); } weekIdx++; }
+      md.setDate(md.getDate()+1);
+    }
+    monthsEl.innerHTML = '';
+    monthsEl.style.paddingLeft = '20px';
+    months.forEach((m,i) => {
+      const span = document.createElement('span');
+      span.textContent = m.label;
+      span.style.width = ((i<months.length-1 ? months[i+1].idx-m.idx : weekIdx-m.idx)*15)+'px';
+      monthsEl.appendChild(span);
+    });
+  }
+}
+
 // ── Tab 2: Activity ────────────────────────────────────────────────────
 function renderActivity() {
   charts.dailyMsgs = new Chart(document.getElementById('chartDailyMsgs'), {
@@ -2004,6 +2091,7 @@ function renderActivity() {
     options: { responsive: true, maintainAspectRatio: false,
       plugins: { legend: { labels: { color: '#94a3b8' } } }, scales: scaleDefaults }
   });
+  renderHeatmap();
 }
 
 // ── Tab 3: Projects ────────────────────────────────────────────────────
