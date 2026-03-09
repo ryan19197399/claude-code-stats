@@ -2669,6 +2669,237 @@ renderInsights();
 </html>'''
 
 
+def generate_session_pages(sessions, session_list):
+    """Generate individual HTML pages for each session."""
+    sessions_dir = OUTPUT_DIR / "sessions"
+    sessions_dir.mkdir(exist_ok=True)
+
+    count = 0
+    for sess_data in session_list:
+        sid = sess_data["session_id"]
+        project_dir = sess_data.get("project_dir", "")
+        messages = extract_session_messages(sid, project_dir)
+
+        if not messages:
+            continue
+
+        session_json = json.dumps({
+            "session": sess_data,
+            "messages": messages,
+        }, ensure_ascii=False)
+
+        html = _get_session_html_template()
+        html = html.replace('"__SESSION_DATA__"', session_json)
+        html = html.replace('__VERSION__', VERSION)
+
+        out_path = sessions_dir / f"{sid}.html"
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        count += 1
+
+    print(f"  Generated {count} session pages in {sessions_dir}")
+
+
+def _get_session_html_template():
+    return '''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Detail</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<style>
+:root { --bg:#0f1117; --bg2:#1a1d27; --bg3:#242836; --border:#2d3348; --text:#e2e8f0; --text2:#94a3b8; --accent:#6366f1; --accent2:#818cf8; --green:#22c55e; --orange:#f59e0b; --red:#ef4444; --blue:#3b82f6; --purple:#a855f7; --cyan:#06b6d4; --amber:#f59e0b; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,-apple-system,sans-serif; font-size:14px; }
+a { color:var(--accent2); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.header { background:var(--bg2); border-bottom:1px solid var(--border); padding:16px 24px; }
+.header-top { display:flex; align-items:center; gap:16px; margin-bottom:8px; }
+.header h1 { font-size:18px; font-weight:600; flex:1; }
+.session-meta { display:flex; gap:16px; color:var(--text2); font-size:12px; flex-wrap:wrap; }
+.session-meta span { display:flex; align-items:center; gap:4px; }
+.model-badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+.model-badge.opus { background:rgba(168,85,247,0.2); color:var(--purple); }
+.model-badge.sonnet { background:rgba(59,130,246,0.2); color:var(--blue); }
+.model-badge.haiku { background:rgba(34,197,94,0.2); color:var(--green); }
+.stats-bar { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; padding:16px 24px; background:var(--bg2); border-bottom:1px solid var(--border); }
+.stat-card { text-align:center; }
+.stat-card .label { font-size:11px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+.stat-card .value { font-size:20px; font-weight:700; }
+.main-layout { display:grid; grid-template-columns:2fr 1fr; gap:0; max-width:1600px; margin:0 auto; }
+.chat-panel { padding:20px 24px; max-height:calc(100vh - 180px); overflow-y:auto; border-right:1px solid var(--border); }
+.msg { margin-bottom:16px; padding:12px 16px; border-radius:10px; }
+.msg.user { background:var(--bg2); border:1px solid var(--border); }
+.msg.assistant { background:var(--bg3); border:1px solid var(--border); }
+.msg-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:12px; }
+.msg-role { width:24px; height:24px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; }
+.msg-role.user { background:var(--accent); color:white; }
+.msg-role.assistant { background:var(--purple); color:white; }
+.msg-time { color:var(--text2); }
+.msg-model { margin-left:auto; }
+.msg-tokens { color:var(--text2); font-size:11px; font-family:monospace; }
+.msg-content { font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+.msg-content code { background:var(--bg); padding:1px 4px; border-radius:3px; font-size:12px; }
+.msg-content pre { background:var(--bg); border-radius:6px; padding:12px; margin:8px 0; overflow-x:auto; }
+.msg-content pre code { background:transparent; padding:0; }
+.msg-tools { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.tool-badge { background:var(--bg); padding:2px 8px; border-radius:4px; font-size:11px; color:var(--cyan); font-family:monospace; border:1px solid var(--border); max-width:350px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.msg-expand { color:var(--accent2); cursor:pointer; font-size:12px; margin-top:4px; }
+.marker { padding:6px 16px; margin-bottom:8px; font-size:11px; border-radius:6px; display:flex; align-items:center; gap:8px; }
+.marker.hook { background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); color:var(--amber); }
+.marker.compaction { background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:var(--red); }
+.sidebar { padding:20px; max-height:calc(100vh - 180px); overflow-y:auto; }
+.sidebar-card { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:12px; }
+.sidebar-card h4 { font-size:13px; font-weight:600; margin-bottom:10px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; }
+.sidebar-row { display:flex; justify-content:space-between; padding:4px 0; font-size:13px; }
+.sidebar-row .label { color:var(--text2); }
+.sidebar-row .val { font-weight:600; font-variant-numeric:tabular-nums; }
+.sidebar-tag { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; margin:2px; background:var(--bg3); }
+.compaction-timeline { margin-top:8px; }
+.compaction-event { padding:4px 8px; font-size:11px; color:var(--amber); border-left:2px solid var(--amber); margin-bottom:4px; }
+@media (max-width:1000px) { .main-layout { grid-template-columns:1fr; } .stats-bar { grid-template-columns:repeat(3,1fr); } }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-top">
+    <a href="../index.html">&larr; Back to Dashboard</a>
+    <h1 id="sessionTitle"></h1>
+  </div>
+  <div class="session-meta" id="sessionMeta"></div>
+</div>
+<div class="stats-bar" id="statsBar"></div>
+<div class="main-layout">
+  <div class="chat-panel" id="chatPanel"></div>
+  <div class="sidebar" id="sidebar"></div>
+</div>
+<script>
+const S = "__SESSION_DATA__";
+const sess = S.session;
+const msgs = S.messages;
+const fmt = n => n.toLocaleString();
+const fmtUSD = n => '$' + n.toFixed(4);
+const fmtTokens = n => { if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'K'; return n.toString(); };
+function escHtml(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function fmtTime(ts) { if(!ts) return ''; const d=new Date(typeof ts==='number'?ts:ts); return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+function modelClass(m) { const l=(m||'').toLowerCase(); if(l.includes('opus')) return 'opus'; if(l.includes('sonnet')) return 'sonnet'; if(l.includes('haiku')) return 'haiku'; return ''; }
+
+document.getElementById('sessionTitle').textContent = sess.project;
+document.getElementById('sessionMeta').innerHTML =
+  '<span>Session: <code>'+sess.session_id.slice(0,8)+'</code></span>' +
+  '<span>'+new Date(sess.start).toLocaleDateString()+' '+new Date(sess.start).toLocaleTimeString()+'</span>' +
+  '<span class="model-badge '+modelClass(sess.primary_model)+'">'+escHtml(sess.primary_model)+'</span>';
+
+const toolCount = Object.values(sess.tools||{}).reduce((s,v)=>s+v,0);
+document.getElementById('statsBar').innerHTML =
+  '<div class="stat-card"><div class="label">Duration</div><div class="value">'+sess.duration_min+'m</div></div>' +
+  '<div class="stat-card"><div class="label">Messages</div><div class="value" style="color:var(--green)">'+sess.messages+'</div></div>' +
+  '<div class="stat-card"><div class="label">Tool Calls</div><div class="value" style="color:var(--cyan)">'+toolCount+'</div></div>' +
+  '<div class="stat-card"><div class="label">Tokens</div><div class="value" style="color:var(--purple)">'+fmtTokens(sess.input_tokens+sess.output_tokens)+'</div></div>' +
+  '<div class="stat-card"><div class="label">Est. Cost</div><div class="value" style="color:var(--orange)">'+fmtUSD(sess.cost)+'</div></div>' +
+  '<div class="stat-card"><div class="label">Compactions</div><div class="value" style="color:'+((sess.compactions||0)>0?'var(--amber)':'var(--text2)')+'">'+((sess.compactions||0))+'</div></div>';
+
+// Simple markdown rendering
+function renderMd(text) {
+  if (!text) return '';
+  let h = escHtml(text);
+  h = h.replace(/```(\\w*)\\n([\\s\\S]*?)```/g, function(m,lang,code) { return '<pre><code class="language-'+lang+'">'+code+'</code></pre>'; });
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+  return h;
+}
+
+// Chat panel
+const chatEl = document.getElementById('chatPanel');
+let chatHtml = '';
+msgs.forEach((m,i) => {
+  if (m.role==='hook') {
+    chatHtml += '<div class="marker hook"><span>&#9881;</span> Hook: '+escHtml(m.hook_name)+' <span style="margin-left:auto">'+fmtTime(m.timestamp)+'</span></div>';
+  } else if (m.role==='compaction') {
+    chatHtml += '<div class="marker compaction"><span>&#9889;</span> Context Compaction <span style="margin-left:auto">'+fmtTime(m.timestamp)+'</span></div>';
+  } else {
+    const isLong = (m.content||'').length > 2000;
+    const display = isLong ? m.content.slice(0,2000) : m.content;
+    chatHtml += '<div class="msg '+m.role+'">' +
+      '<div class="msg-header">' +
+        '<div class="msg-role '+m.role+'">'+(m.role==='user'?'U':'A')+'</div>' +
+        '<span class="msg-time">'+fmtTime(m.timestamp)+'</span>' +
+        (m.model ? '<span class="msg-model"><span class="model-badge '+modelClass(m.model)+'">'+escHtml(m.model)+'</span></span>' : '') +
+        (m.tokens ? '<span class="msg-tokens">'+fmtTokens(m.tokens.input)+'in / '+fmtTokens(m.tokens.output)+'out</span>' : '') +
+      '</div>' +
+      '<div class="msg-content" id="mc'+i+'">'+renderMd(display)+'</div>' +
+      (isLong ? '<div class="msg-expand" data-idx="'+i+'">Show full message ('+(m.content.length/1000).toFixed(1)+'K chars)</div>' : '') +
+      (m.tools && m.tools.length>0 ? '<div class="msg-tools">'+m.tools.map(t =>
+        '<span class="tool-badge">'+escHtml(t.name)+(t.detail ? ' '+escHtml(t.detail) : '')+'</span>'
+      ).join('')+'</div>' : '') +
+    '</div>';
+  }
+});
+chatEl.innerHTML = chatHtml;
+
+// Expand handlers
+document.querySelectorAll('.msg-expand').forEach(el => {
+  el.addEventListener('click', function() {
+    const idx = parseInt(this.getAttribute('data-idx'));
+    document.getElementById('mc'+idx).innerHTML = renderMd(msgs[idx].content);
+    this.remove();
+  });
+});
+
+// Syntax highlighting
+document.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+
+// Sidebar
+const sideEl = document.getElementById('sidebar');
+let sideHtml = '';
+sideHtml += '<div class="sidebar-card"><h4>Token Breakdown</h4>' +
+  '<div class="sidebar-row"><span class="label">Input Tokens</span><span class="val">'+fmtTokens(sess.input_tokens)+'</span></div>' +
+  '<div class="sidebar-row"><span class="label">Output Tokens</span><span class="val">'+fmtTokens(sess.output_tokens)+'</span></div>' +
+  '<div class="sidebar-row"><span class="label">Cache Read</span><span class="val">'+fmtTokens(sess.cache_read_tokens)+'</span></div>' +
+  '<div class="sidebar-row"><span class="label">Cache Write</span><span class="val">'+fmtTokens(sess.cache_write_tokens)+'</span></div>' +
+  '</div>';
+const tools = Object.entries(sess.tools||{}).sort((a,b)=>b[1]-a[1]);
+if (tools.length>0) {
+  sideHtml += '<div class="sidebar-card"><h4>Tools Used</h4>' +
+    tools.slice(0,15).map(([n,c]) => '<div class="sidebar-row"><span class="label">'+escHtml(n)+'</span><span class="val">'+c+'x</span></div>').join('') +
+    '</div>';
+}
+const skills = Object.entries(sess.skills||{}).sort((a,b)=>b[1]-a[1]);
+if (skills.length>0) {
+  sideHtml += '<div class="sidebar-card"><h4>Skills Used</h4>' +
+    skills.map(([n,c]) => '<span class="sidebar-tag" style="color:var(--purple)">'+escHtml(n)+' '+c+'x</span>').join('') +
+    '</div>';
+}
+const hooks = Object.entries(sess.hooks||{}).sort((a,b)=>b[1]-a[1]);
+if (hooks.length>0) {
+  sideHtml += '<div class="sidebar-card"><h4>Hooks Fired</h4>' +
+    hooks.map(([n,c]) => '<div class="sidebar-row"><span class="label" style="color:var(--amber)">'+escHtml(n)+'</span><span class="val">'+c+'x</span></div>').join('') +
+    '</div>';
+}
+if (sess.compaction_events && sess.compaction_events.length>0) {
+  sideHtml += '<div class="sidebar-card" style="border-color:rgba(245,158,11,0.3)"><h4 style="color:var(--amber)">Compaction Timeline</h4>' +
+    '<div class="compaction-timeline">' +
+    sess.compaction_events.map(e => '<div class="compaction-event">'+fmtTime(e.timestamp)+'</div>').join('') +
+    '</div></div>';
+}
+const models = Object.entries(sess.model_breakdown||{});
+if (models.length>0) {
+  sideHtml += '<div class="sidebar-card"><h4>Model Breakdown</h4>' +
+    models.map(([m,d]) => '<div class="sidebar-row"><span class="label"><span class="model-badge '+modelClass(m)+'">'+escHtml(m)+'</span></span><span class="val">'+fmtUSD(d.cost)+' ('+d.calls+' calls)</span></div>').join('') +
+    '</div>';
+}
+sideHtml += '<div class="sidebar-card"><h4>Metadata</h4>' +
+  '<div class="sidebar-row"><span class="label">Session ID</span><span class="val" style="font-size:11px;font-family:monospace">'+sess.session_id.slice(0,12)+'...</span></div>' +
+  '<div class="sidebar-row"><span class="label">File Size</span><span class="val">'+sess.file_size_mb+' MB</span></div>' +
+  '</div>';
+sideEl.innerHTML = sideHtml;
+</script>
+</body>
+</html>'''
+
+
 def main():
     print("Claude Code Statistics Extractor")
     print("=" * 50)
@@ -2733,6 +2964,9 @@ def main():
     print(f"\nGenerating {DASHBOARD_HTML}...")
     generate_dashboard(data)
     print(f"  Size: {DASHBOARD_HTML.stat().st_size / 1024:.1f} KB")
+
+    print(f"\nGenerating session pages...")
+    generate_session_pages(sessions, data["sessions"])
 
     elapsed = time.time() - t0
     print(f"\n{'=' * 50}")
