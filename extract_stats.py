@@ -705,6 +705,139 @@ def parse_session_transcripts():
     return sessions
 
 
+def extract_session_messages(session_id, project_dir_name):
+    """Extract per-message data for a single session for replay view."""
+    messages = []
+
+    # Search for the JSONL file
+    sources = []
+    if MIGRATION_ENABLED and MIGRATION_PROJECTS_DIR and MIGRATION_PROJECTS_DIR.exists():
+        sources.append(MIGRATION_PROJECTS_DIR)
+    if PROJECTS_DIR.exists():
+        sources.append(PROJECTS_DIR)
+
+    jsonl_path = None
+    for projects_dir in sources:
+        candidate = projects_dir / project_dir_name / f"{session_id}.jsonl"
+        if candidate.exists():
+            jsonl_path = candidate
+            break
+        # Also search subdirectories
+        for f in (projects_dir / project_dir_name).rglob(f"{session_id}.jsonl"):
+            jsonl_path = f
+            break
+        if jsonl_path:
+            break
+
+    if not jsonl_path:
+        return messages
+
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = obj.get("type")
+            timestamp = obj.get("timestamp", "")
+
+            if msg_type == "user":
+                message = obj.get("message", {})
+                content = message.get("content", "")
+                # Skip tool results
+                if isinstance(content, list):
+                    texts = []
+                    is_tool_result = False
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "tool_result":
+                                is_tool_result = True
+                                break
+                            if block.get("type") == "text":
+                                texts.append(block.get("text", ""))
+                    if is_tool_result:
+                        continue
+                    content = "\n".join(texts)
+
+                if not content or content.startswith("<command") or content.startswith("<local-command"):
+                    continue
+
+                messages.append({
+                    "role": "user",
+                    "content": content,
+                    "timestamp": timestamp,
+                })
+
+            elif msg_type == "assistant":
+                message = obj.get("message", {})
+                model = message.get("model", "unknown")
+                usage = message.get("usage", {})
+                content_blocks = message.get("content", [])
+
+                text_parts = []
+                tools = []
+                for block in content_blocks:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif block.get("type") == "tool_use":
+                            tool_name = block.get("name", "")
+                            tool_input = block.get("input", {})
+                            tool_info = {"name": tool_name}
+                            if tool_name == "Bash":
+                                tool_info["detail"] = tool_input.get("command", "")[:200]
+                            elif tool_name in ("Read", "Edit", "Write"):
+                                tool_info["detail"] = tool_input.get("file_path", "")
+                            elif tool_name in ("Grep", "Glob"):
+                                tool_info["detail"] = tool_input.get("pattern", "")
+                            elif tool_name == "Skill":
+                                tool_info["detail"] = tool_input.get("skill", "")
+                            elif tool_name == "Agent":
+                                tool_info["detail"] = tool_input.get("description", "")[:100]
+                            tools.append(tool_info)
+
+                text = "\n".join(text_parts)
+                if not text and not tools:
+                    continue
+
+                messages.append({
+                    "role": "assistant",
+                    "content": text,
+                    "model": get_model_display(model),
+                    "tokens": {
+                        "input": usage.get("input_tokens", 0),
+                        "output": usage.get("output_tokens", 0),
+                        "cache_read": usage.get("cache_read_input_tokens", 0),
+                        "cache_write": usage.get("cache_creation_input_tokens", 0),
+                    },
+                    "cost": round(calc_cost(model, usage), 4),
+                    "tools": tools,
+                    "timestamp": timestamp,
+                })
+
+            elif msg_type == "progress":
+                data_obj = obj.get("data", {})
+                if data_obj.get("type") == "hook_progress":
+                    messages.append({
+                        "role": "hook",
+                        "hook_event": data_obj.get("hookEvent", ""),
+                        "hook_name": data_obj.get("hookName", ""),
+                        "timestamp": timestamp,
+                    })
+
+            elif msg_type == "summary":
+                messages.append({
+                    "role": "compaction",
+                    "timestamp": timestamp,
+                })
+
+    return messages
+
+
 def build_plan_analysis(daily_cost_series, session_list):
     """Analyze cost savings per plan period and current billing cycle."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
