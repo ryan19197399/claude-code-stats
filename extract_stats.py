@@ -3494,7 +3494,7 @@ sideEl.innerHTML = sideHtml;
 </html>'''
 
 
-def generate_project_pages(session_list):
+def generate_project_pages(session_list, data=None):
     """Generate individual HTML pages for each project."""
     projects_dir = OUTPUT_DIR / "projects"
     projects_dir.mkdir(exist_ok=True)
@@ -3521,6 +3521,66 @@ def generate_project_pages(session_list):
             for sk, c in s.get("skills", {}).items():
                 proj_skills[sk] += c
 
+        # Memory for this project
+        memory_content = ""
+        if data and data.get("_memories"):
+            proj_dir = proj_sessions[0].get("project_dir", "") if proj_sessions else ""
+            if proj_dir in data["_memories"]:
+                memory_content = data["_memories"][proj_dir].get("content", "")
+
+        # File ops aggregation
+        proj_file_ops = defaultdict(lambda: {"read": 0, "edit": 0, "write": 0})
+        workflow_events = []
+        file_ops_by_session = data.get("_file_ops_by_session", {}) if data else {}
+        for s in proj_sessions:
+            sid = s["session_id"]
+            ops = file_ops_by_session.get(sid, [])
+            for fo in ops:
+                proj_file_ops[fo["path"]][fo["op"]] += 1
+                workflow_events.append({
+                    "type": fo["op"],
+                    "path": fo["path"],
+                    "timestamp": fo["timestamp"],
+                    "session_id": sid,
+                })
+            # Add git ops to workflow
+            for go in s.get("git_ops", []):
+                workflow_events.append({
+                    "type": "git_" + go["type"],
+                    "message": go.get("message", ""),
+                    "timestamp": go["timestamp"],
+                    "session_id": sid,
+                })
+            # Add agent dispatches to workflow
+            for ad in s.get("agent_dispatches", []):
+                workflow_events.append({
+                    "type": "agent",
+                    "description": ad.get("description", ""),
+                    "agent_type": ad.get("type", ""),
+                    "timestamp": "",
+                    "session_id": sid,
+                })
+
+        # Sort workflow by timestamp (events without timestamps go to end)
+        workflow_events.sort(key=lambda e: e.get("timestamp", "") or "z")
+
+        # Top files
+        top_files = sorted(proj_file_ops.items(), key=lambda x: -(x[1]["edit"] + x[1]["write"] + x[1]["read"]))[:15]
+
+        # Subagent types
+        proj_agent_types = defaultdict(int)
+        for s in proj_sessions:
+            for ad in s.get("agent_dispatches", []):
+                proj_agent_types[ad.get("type", "general-purpose")] += 1
+
+        # Git ops counts
+        proj_commits = sum(len([g for g in s.get("git_ops", []) if g["type"] == "commit"]) for s in proj_sessions)
+        proj_pushes = sum(len([g for g in s.get("git_ops", []) if g["type"] == "push"]) for s in proj_sessions)
+        proj_prs = sum(len([g for g in s.get("git_ops", []) if g["type"] == "pr"]) for s in proj_sessions)
+
+        # Error count
+        proj_errors = sum(s.get("error_count", 0) for s in proj_sessions)
+
         slug = re.sub(r'[^a-zA-Z0-9_-]', '_', proj_name.replace('/', '_'))
         slug_map[proj_name] = slug
 
@@ -3535,6 +3595,12 @@ def generate_project_pages(session_list):
             },
             "tools": dict(sorted(proj_tools.items(), key=lambda x: -x[1])),
             "skills": dict(sorted(proj_skills.items(), key=lambda x: -x[1])),
+            "memory": memory_content,
+            "top_files": [{"path": p, "ops": o} for p, o in top_files],
+            "workflow": workflow_events[:500],
+            "agent_types": dict(sorted(proj_agent_types.items(), key=lambda x: -x[1])),
+            "git_ops": {"commits": proj_commits, "pushes": proj_pushes, "prs": proj_prs},
+            "error_count": proj_errors,
         }, ensure_ascii=False)
 
         html = _get_project_html_template()
@@ -3558,7 +3624,7 @@ def _get_project_html_template():
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Project Detail</title>
 <style>
-:root { --bg:#0f1117; --bg2:#1a1d27; --bg3:#242836; --border:#2d3348; --text:#e2e8f0; --text2:#94a3b8; --accent:#6366f1; --accent2:#818cf8; --green:#22c55e; --orange:#f59e0b; --blue:#3b82f6; --purple:#a855f7; --cyan:#06b6d4; --amber:#f59e0b; }
+:root { --bg:#0f1117; --bg2:#1a1d27; --bg3:#242836; --border:#2d3348; --text:#e2e8f0; --text2:#94a3b8; --accent:#6366f1; --accent2:#818cf8; --green:#22c55e; --orange:#f59e0b; --red:#ef4444; --blue:#3b82f6; --purple:#a855f7; --cyan:#06b6d4; --amber:#f59e0b; }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,-apple-system,sans-serif; font-size:14px; }
 a { color:var(--accent2); text-decoration:none; }
@@ -3585,7 +3651,46 @@ a:hover { text-decoration:underline; }
 .model-badge.opus { background:rgba(168,85,247,0.2); color:var(--purple); }
 .model-badge.sonnet { background:rgba(59,130,246,0.2); color:var(--blue); }
 .model-badge.haiku { background:rgba(34,197,94,0.2); color:var(--green); }
-@media (max-width:900px) { .kpi-grid { grid-template-columns:repeat(2,1fr); } }
+.proj-tabs { display:flex; gap:0; margin-bottom:24px; border-bottom:2px solid var(--border); }
+.proj-tab { padding:10px 20px; font-size:14px; font-weight:600; border:none; background:transparent; color:var(--text2); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-2px; }
+.proj-tab.active { color:var(--accent2); border-bottom-color:var(--accent); }
+.proj-tab-content { display:none; }
+.proj-tab-content.active { display:block; }
+.memory-card { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:24px; }
+.memory-card h3 { font-size:15px; margin-bottom:12px; cursor:pointer; display:flex; align-items:center; gap:8px; }
+.memory-card h3::before { content:'\\25b6'; font-size:10px; transition:transform 0.2s; }
+.memory-card.expanded h3::before { transform:rotate(90deg); }
+.memory-content { display:none; font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-word; color:var(--text2); max-height:500px; overflow-y:auto; }
+.memory-card.expanded .memory-content { display:block; }
+.info-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px; }
+.info-card { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:16px; }
+.info-card h4 { font-size:13px; color:var(--text2); text-transform:uppercase; margin-bottom:8px; }
+.info-row { display:flex; justify-content:space-between; padding:4px 0; font-size:13px; }
+.info-row .lbl { color:var(--text2); }
+.info-row .val { font-weight:600; }
+.file-table { width:100%; border-collapse:collapse; font-size:13px; }
+.file-table th { text-align:left; padding:8px; color:var(--text2); font-size:11px; text-transform:uppercase; border-bottom:1px solid var(--border); }
+.file-table td { padding:6px 8px; border-bottom:1px solid var(--border); }
+.file-table td:not(:first-child) { text-align:center; font-variant-numeric:tabular-nums; }
+.tag { display:inline-block; padding:3px 10px; border-radius:6px; font-size:12px; font-weight:600; margin:2px; }
+.workflow-timeline { position:relative; padding-left:24px; }
+.workflow-timeline::before { content:''; position:absolute; left:8px; top:0; bottom:0; width:2px; background:var(--border); }
+.wf-entry { position:relative; margin-bottom:6px; padding:4px 0 4px 16px; font-size:12px; }
+.wf-entry::before { content:''; position:absolute; left:-20px; top:8px; width:10px; height:10px; border-radius:50%; }
+.wf-entry.read::before { background:var(--blue); }
+.wf-entry.edit::before { background:var(--cyan); }
+.wf-entry.write::before { background:var(--green); }
+.wf-entry.git_commit::before { background:var(--orange); }
+.wf-entry.git_push::before { background:var(--amber); }
+.wf-entry.git_pr::before { background:var(--purple); }
+.wf-entry.agent::before { background:var(--accent); }
+.wf-entry .path { color:var(--text2); font-family:monospace; font-size:11px; }
+.wf-entry .msg { color:var(--text); }
+.wf-entry .ts { color:var(--text2); font-size:10px; margin-left:8px; }
+.wf-filters { display:flex; gap:6px; margin-bottom:16px; flex-wrap:wrap; }
+.wf-filter { padding:4px 12px; font-size:11px; border:1px solid var(--border); background:var(--bg2); color:var(--text2); cursor:pointer; border-radius:4px; }
+.wf-filter.active { background:var(--accent); color:white; border-color:var(--accent); }
+@media (max-width:900px) { .kpi-grid { grid-template-columns:repeat(2,1fr); } .info-grid { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -3595,10 +3700,23 @@ a:hover { text-decoration:underline; }
 </div>
 <div class="container">
   <div class="kpi-grid" id="kpiGrid"></div>
-  <div class="tools-section" id="toolsSection"><h3>Top Tools</h3><div class="tool-pills" id="toolPills"></div></div>
-  <div id="skillsSection"></div>
-  <h3 style="margin-bottom:16px;font-size:15px">Sessions</h3>
-  <div id="sessionList"></div>
+  <div class="proj-tabs">
+    <button class="proj-tab active" data-tab="overview">Overview</button>
+    <button class="proj-tab" data-tab="workflow">Workflow</button>
+  </div>
+  <div class="proj-tab-content active" id="ptab-overview">
+    <div id="memorySection"></div>
+    <div class="info-grid" id="infoGrid"></div>
+    <div class="tools-section" id="toolsSection"><h3>Top Tools</h3><div class="tool-pills" id="toolPills"></div></div>
+    <div id="skillsSection"></div>
+    <div id="topFilesSection"></div>
+    <h3 style="margin:24px 0 16px;font-size:15px">Sessions</h3>
+    <div id="sessionList"></div>
+  </div>
+  <div class="proj-tab-content" id="ptab-workflow">
+    <div class="wf-filters" id="wfFilters"></div>
+    <div class="workflow-timeline" id="workflowTimeline"></div>
+  </div>
 </div>
 <script>
 const P = "__PROJECT_DATA__";
@@ -3627,6 +3745,61 @@ if (Object.keys(P.skills).length>0) {
     ).join('') + '</div></div>';
 }
 
+// Tab switching
+document.querySelectorAll('.proj-tab').forEach(tab => {
+  tab.addEventListener('click', function() {
+    document.querySelectorAll('.proj-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.proj-tab-content').forEach(c => c.classList.remove('active'));
+    this.classList.add('active');
+    document.getElementById('ptab-'+this.dataset.tab).classList.add('active');
+  });
+});
+
+// Memory
+if (P.memory) {
+  document.getElementById('memorySection').innerHTML =
+    '<div class="memory-card" id="memCard"><h3 onclick="document.getElementById(\\\'memCard\\\').classList.toggle(\\\'expanded\\\')">Project Memory</h3><div class="memory-content">'+escHtml(P.memory)+'</div></div>';
+}
+
+// Info grid (subagents, git ops, errors)
+let infoHtml = '';
+const agentTypes = Object.entries(P.agent_types || {});
+if (agentTypes.length > 0) {
+  infoHtml += '<div class="info-card"><h4>Subagents</h4>' +
+    agentTypes.map(([t,c]) => '<span class="tag" style="background:rgba(99,102,241,0.15);color:var(--accent2)">'+escHtml(t)+' '+c+'x</span>').join('') +
+    '</div>';
+}
+const go = P.git_ops || {};
+if ((go.commits||0) + (go.pushes||0) + (go.prs||0) > 0) {
+  infoHtml += '<div class="info-card"><h4>Git Operations</h4>' +
+    '<div class="info-row"><span class="lbl">Commits</span><span class="val" style="color:var(--green)">'+(go.commits||0)+'</span></div>' +
+    '<div class="info-row"><span class="lbl">Pushes</span><span class="val" style="color:var(--blue)">'+(go.pushes||0)+'</span></div>' +
+    '<div class="info-row"><span class="lbl">PRs</span><span class="val" style="color:var(--purple)">'+(go.prs||0)+'</span></div>' +
+    '</div>';
+}
+if (P.error_count > 0) {
+  infoHtml += '<div class="info-card"><h4>Errors</h4>' +
+    '<div style="font-size:24px;font-weight:700;color:var(--red)">'+P.error_count+'</div>' +
+    '<div style="color:var(--text2);font-size:12px">tool errors in this project</div></div>';
+}
+document.getElementById('infoGrid').innerHTML = infoHtml;
+
+// Top files table
+const tf = P.top_files || [];
+if (tf.length > 0) {
+  document.getElementById('topFilesSection').innerHTML =
+    '<div class="tools-section"><h3>Top Files</h3>' +
+    '<table class="file-table"><thead><tr><th>File</th><th>Reads</th><th>Edits</th><th>Writes</th></tr></thead><tbody>' +
+    tf.map(f => {
+      const short = f.path.split('/').slice(-2).join('/');
+      return '<tr><td title="'+escHtml(f.path)+'"><code style="font-size:11px">'+escHtml(short)+'</code></td>' +
+        '<td style="color:var(--blue)">'+(f.ops.read||0)+'</td>' +
+        '<td style="color:var(--cyan)">'+(f.ops.edit||0)+'</td>' +
+        '<td style="color:var(--green)">'+(f.ops.write||0)+'</td></tr>';
+    }).join('') +
+    '</tbody></table></div>';
+}
+
 document.getElementById('sessionList').innerHTML = P.sessions.map(s =>
   '<div class="session-card">' +
     '<div class="top">' +
@@ -3648,6 +3821,47 @@ document.getElementById('sessionList').innerHTML = P.sessions.map(s =>
     '</div>' +
   '</div>'
 ).join('');
+
+// Workflow timeline
+const wf = P.workflow || [];
+const wfTypes = ['read','edit','write','git_commit','git_push','git_pr','agent'];
+const wfLabels = {read:'Read',edit:'Edit',write:'Write',git_commit:'Commit',git_push:'Push',git_pr:'PR',agent:'Agent'};
+let activeWfFilters = new Set(wfTypes);
+
+function renderWorkflow() {
+  const filtered = wf.filter(e => activeWfFilters.has(e.type));
+  const el = document.getElementById('workflowTimeline');
+  if (filtered.length === 0) { el.innerHTML = '<div style="color:var(--text2);padding:20px">No workflow events</div>'; return; }
+  const shown = filtered.slice(0, 200);
+  el.innerHTML = shown.map(e => {
+    let label = '';
+    if (e.path) {
+      const short = e.path.split('/').slice(-2).join('/');
+      label = '<span class="path">'+escHtml(short)+'</span>';
+    } else if (e.message) {
+      label = '<span class="msg">'+escHtml(e.message.slice(0,80))+'</span>';
+    } else if (e.description) {
+      label = '<span class="msg">'+escHtml(e.description)+'</span>';
+    }
+    const ts = e.timestamp ? '<span class="ts">'+new Date(e.timestamp).toLocaleTimeString()+'</span>' : '';
+    return '<div class="wf-entry '+e.type+'">'+label+ts+'</div>';
+  }).join('') + (filtered.length > 200 ? '<div style="color:var(--text2);padding:8px;font-size:12px">...and '+(filtered.length-200)+' more</div>' : '');
+}
+
+document.getElementById('wfFilters').innerHTML = wfTypes.map(t =>
+  '<button class="wf-filter active" data-type="'+t+'">'+wfLabels[t]+'</button>'
+).join('');
+
+document.querySelectorAll('.wf-filter').forEach(btn => {
+  btn.addEventListener('click', function() {
+    const type = this.dataset.type;
+    if (activeWfFilters.has(type)) { activeWfFilters.delete(type); this.classList.remove('active'); }
+    else { activeWfFilters.add(type); this.classList.add('active'); }
+    renderWorkflow();
+  });
+});
+
+renderWorkflow();
 </script>
 </body>
 </html>'''
@@ -3734,7 +3948,7 @@ def main():
     generate_session_pages(sessions, data["sessions"])
 
     print(f"\nGenerating project pages...")
-    project_slugs = generate_project_pages(data["sessions"])
+    project_slugs = generate_project_pages(data["sessions"], data=data)
     data["project_slugs"] = project_slugs
     # Re-generate dashboard with project slug mapping
     generate_dashboard(data)
