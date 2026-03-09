@@ -1344,6 +1344,11 @@ def build_dashboard_data(sessions, stats_cache, dot_claude, history,
             "first_prompt": sess["first_prompt"],
             "slug": sess["slug"],
             "file_size_mb": round(sess["file_size"] / 1_048_576, 2),
+            "agent_dispatches": sess.get("agent_dispatches", []),
+            "subagents": sess.get("subagents", []),
+            "error_count": sess.get("error_count", 0),
+            "file_ops_count": len(sess.get("file_ops", [])),
+            "git_ops": sess.get("git_ops", []),
         })
 
     session_list.sort(key=lambda s: s["start"])
@@ -1469,6 +1474,29 @@ def build_dashboard_data(sessions, stats_cache, dot_claude, history,
     hook_ranking = sorted(global_hooks.items(), key=lambda x: -x[1])
     hook_summary = [{"name": n, "count": c} for n, c in hook_ranking]
 
+    # Global Agent/Subagent Aggregation
+    global_agent_types = defaultdict(int)
+    global_agent_descriptions = defaultdict(int)
+    total_agent_dispatches = 0
+    for s in session_list:
+        for ad in s.get("agent_dispatches", []):
+            global_agent_types[ad.get("type", "general-purpose")] += 1
+            global_agent_descriptions[ad.get("description", "")] += 1
+            total_agent_dispatches += 1
+    agent_type_summary = sorted(global_agent_types.items(), key=lambda x: -x[1])
+    agent_desc_summary = sorted(global_agent_descriptions.items(), key=lambda x: -x[1])[:10]
+
+    # Global Error Aggregation
+    total_errors = 0
+    for s in session_list:
+        total_errors += s.get("error_count", 0)
+    total_tool_calls = sum(s.get("api_calls", 0) for s in session_list)
+
+    # Global Git Ops
+    total_commits = sum(len([g for g in s.get("git_ops", []) if g.get("type") == "commit"]) for s in session_list)
+    total_pushes = sum(len([g for g in s.get("git_ops", []) if g.get("type") == "push"]) for s in session_list)
+    total_prs = sum(len([g for g in s.get("git_ops", []) if g.get("type") == "pr"]) for s in session_list)
+
     dc = dot_claude
     account = dc.get("oauthAccount", {})
 
@@ -1510,13 +1538,33 @@ def build_dashboard_data(sessions, stats_cache, dot_claude, history,
         "tool_summary": tool_summary,
         "skill_summary": skill_summary,
         "hook_summary": hook_summary,
+        "agent_summary": {
+            "total_dispatches": total_agent_dispatches,
+            "type_distribution": [{"type": t, "count": c} for t, c in agent_type_summary],
+            "top_descriptions": [{"desc": d, "count": c} for d, c in agent_desc_summary],
+        },
+        "error_summary": {
+            "total_errors": total_errors,
+            "total_tool_calls": total_tool_calls,
+            "error_rate": round(total_errors / max(total_tool_calls, 1) * 100, 2),
+        },
+        "git_summary": {
+            "commits": total_commits,
+            "pushes": total_pushes,
+            "prs": total_prs,
+        },
         "insights": {
             "plans": plans or [],
             "plugins": plugins or {},
             "todos": todos or {},
             "file_history": file_history or {},
             "storage": storage or {},
+            "tasks": tasks or {},
+            "telemetry": telemetry or {},
+            "memories_count": len(memories) if memories else 0,
         },
+        "_memories": memories or {},
+        "_file_ops_by_session": {sid: sess.get("file_ops", []) for sid, sess in sessions.items()},
     }
 
     return data
