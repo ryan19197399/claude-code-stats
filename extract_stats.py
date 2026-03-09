@@ -727,7 +727,9 @@ def parse_session_transcripts():
                                 continue
 
                             msg_type = obj.get("type")
-                            session_id = obj.get("sessionId", file_session_id)
+                            # For subagent files, use the file stem as session_id
+                            # (the sessionId field points to the parent)
+                            session_id = file_session_id if is_subagent else obj.get("sessionId", file_session_id)
                             timestamp = obj.get("timestamp")
 
                             if session_id not in sessions:
@@ -2022,6 +2024,9 @@ const scaleDefaults = {
 let F = {};
 const charts = {};
 let currentDays = 0;
+let anonMode = false;
+let agentTypesChartInstance, agentDescsChartInstance;
+const chartColors = ['#6366f1','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#ec4899','#3b82f6','#f97316','#14b8a6'];
 let currentProjectFilter = '';
 
 function filterData(days, projectFilter) {
@@ -3086,8 +3091,6 @@ function renderInsights() {
 }
 
 // ── Tab 7: Agents ──────────────────────────────────────────────────────
-let agentTypesChartInstance, agentDescsChartInstance;
-const chartColors = ['#6366f1','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#ec4899','#3b82f6','#f97316','#14b8a6'];
 
 function renderAgentsTab() {
   const as = F.agent_summary || D.agent_summary || {};
@@ -3204,7 +3207,6 @@ renderInsights();
 renderAgentsTab();
 
 // F2 Anonymization mode
-let anonMode = false;
 const anonMap = {};
 let anonCounter = 0;
 function anonName(name) {
@@ -3215,13 +3217,9 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'F2') {
     e.preventDefault();
     anonMode = !anonMode;
-    // Toggle CSS class on body
     document.body.classList.toggle('anon-mode', anonMode);
-    // Re-render affected sections
-    renderKPI();
-    renderProjects();
-    renderSessions();
-    renderPlan();
+    // Re-render everything via applyFilter (handles cleanup)
+    applyFilter(currentDays);
     // Show/hide notification
     let note = document.getElementById('anonNote');
     if (!note) {
