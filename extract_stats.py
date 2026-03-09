@@ -2201,7 +2201,12 @@ function buildSessionCard(s) {
   const top = document.createElement('div'); top.className = 'top';
   const projSpan = document.createElement('span'); projSpan.className = 'project'; projSpan.textContent = s.project;
   const costSpan = document.createElement('span'); costSpan.className = 'cost'; costSpan.textContent = fmtUSD(s.cost);
-  top.appendChild(projSpan); top.appendChild(costSpan);
+  const rightGroup = document.createElement('span'); rightGroup.style.display = 'flex'; rightGroup.style.alignItems = 'center';
+  const chatLink = document.createElement('a'); chatLink.href = 'sessions/' + s.session_id + '.html';
+  chatLink.textContent = 'Chat'; chatLink.addEventListener('click', function(e) { e.stopPropagation(); });
+  chatLink.style.cssText = 'color:var(--accent2);font-size:12px;padding:4px 10px;border:1px solid var(--accent);border-radius:6px;margin-right:8px;text-decoration:none';
+  rightGroup.appendChild(chatLink); rightGroup.appendChild(costSpan);
+  top.appendChild(projSpan); top.appendChild(rightGroup);
   card.appendChild(top);
 
   // Info row
@@ -2215,6 +2220,11 @@ function buildSessionCard(s) {
   infoParts.forEach(t => { const sp = document.createElement('span'); sp.textContent = t; info.appendChild(sp); });
   const badge = document.createElement('span'); badge.className = 'model-badge ' + modelClass; badge.textContent = s.primary_model;
   info.appendChild(badge);
+  if (s.compactions > 0) {
+    const compSpan = document.createElement('span'); compSpan.style.color = 'var(--amber)';
+    compSpan.innerHTML = '&#9889; ' + s.compactions;
+    info.appendChild(compSpan);
+  }
   card.appendChild(info);
 
   // Prompt
