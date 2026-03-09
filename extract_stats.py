@@ -1656,6 +1656,16 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
         <div id="miscStats"></div>
       </div>
     </div>
+    <div class="chart-grid">
+      <div class="chart-box">
+        <h3>__L_insights_skills__</h3>
+        <div id="skillsList"></div>
+      </div>
+      <div class="chart-box">
+        <h3>__L_insights_hooks__</h3>
+        <div id="hooksList"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -2593,6 +2603,35 @@ function renderInsights() {
     miscGrid.appendChild(div);
   });
   miscDiv.appendChild(miscGrid);
+
+  // Skills
+  const skillsEl = document.getElementById('skillsList');
+  if (skillsEl && D.skill_summary && D.skill_summary.length > 0) {
+    skillsEl.innerHTML = D.skill_summary.map(s =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border)">' +
+      '<span style="font-size:13px;color:var(--text)">' + escHtml(s.name) + '</span>' +
+      '<span class="tool-tag" style="background:rgba(168,85,247,0.2);color:var(--purple)">' + s.count + 'x</span>' +
+      '</div>'
+    ).join('');
+  } else if (skillsEl) {
+    skillsEl.innerHTML = '<p style="color:var(--text2);font-size:13px;padding:12px">No skills used yet</p>';
+  }
+
+  // Hooks
+  const hooksEl = document.getElementById('hooksList');
+  if (hooksEl && D.hook_summary && D.hook_summary.length > 0) {
+    hooksEl.innerHTML = D.hook_summary.map(h => {
+      const parts = h.name.split(':');
+      const event = parts[0] || '';
+      const name = parts.slice(1).join(':') || h.name;
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border)">' +
+        '<div><span class="model-badge" style="background:rgba(245,158,11,0.2);color:var(--orange);font-size:10px;margin-right:6px">' + escHtml(event) + '</span><span style="font-size:13px">' + escHtml(name) + '</span></div>' +
+        '<span class="tool-tag">' + h.count + 'x</span>' +
+        '</div>';
+    }).join('');
+  } else if (hooksEl) {
+    hooksEl.innerHTML = '<p style="color:var(--text2);font-size:13px;padding:12px">No hooks fired yet</p>';
+  }
 }
 
 // ── Sortable Tables ────────────────────────────────────────────────────

@@ -149,6 +149,8 @@
     "snapshot_size": "Snapshot-Gr\u00f6\u00dfe",
     "todos_total": "Todos gesamt",
     "todos_completed": "Todos erledigt",
-    "completion_rate": "Completion Rate"
+    "completion_rate": "Completion Rate",
+    "insights_skills": "Verwendete Skills",
+    "insights_hooks": "Ausgeführte Hooks"
   }
 }
