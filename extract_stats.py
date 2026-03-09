@@ -2129,8 +2129,10 @@ function renderProjectTable(sortKey, sortDir) {
   tbody.textContent = '';
   sorted.forEach(p => {
     const tr = document.createElement('tr');
+    const slug = D.project_slugs && D.project_slugs[p.name];
+    const nameCell = slug ? '<a href="projects/'+slug+'.html">'+escHtml(p.name)+'</a>' : escHtml(p.name);
     const cells = [
-      {val: p.name, cls: ''},
+      {html: nameCell, cls: ''},
       {val: p.sessions, cls: 'num'},
       {val: fmt(p.messages), cls: 'num'},
       {val: fmtUSD(p.cost), cls: 'num'},
@@ -2140,7 +2142,7 @@ function renderProjectTable(sortKey, sortDir) {
     cells.forEach(c => {
       const td = document.createElement('td');
       if (c.cls) td.className = c.cls;
-      td.textContent = c.val;
+      if (c.html) { td.innerHTML = c.html; } else { td.textContent = c.val; }
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -2910,6 +2912,165 @@ sideEl.innerHTML = sideHtml;
 </html>'''
 
 
+def generate_project_pages(session_list):
+    """Generate individual HTML pages for each project."""
+    projects_dir = OUTPUT_DIR / "projects"
+    projects_dir.mkdir(exist_ok=True)
+
+    # Group sessions by project
+    project_sessions = defaultdict(list)
+    for s in session_list:
+        project_sessions[s["project"]].append(s)
+
+    count = 0
+    slug_map = {}
+    for proj_name, proj_sessions in project_sessions.items():
+        proj_sessions.sort(key=lambda s: s["start"], reverse=True)
+
+        total_cost = sum(s["cost"] for s in proj_sessions)
+        total_messages = sum(s["messages"] for s in proj_sessions)
+        total_tokens = sum(s["input_tokens"] + s["output_tokens"] for s in proj_sessions)
+
+        proj_tools = defaultdict(int)
+        proj_skills = defaultdict(int)
+        for s in proj_sessions:
+            for t, c in s.get("tools", {}).items():
+                proj_tools[t] += c
+            for sk, c in s.get("skills", {}).items():
+                proj_skills[sk] += c
+
+        slug = re.sub(r'[^a-zA-Z0-9_-]', '_', proj_name.replace('/', '_'))
+        slug_map[proj_name] = slug
+
+        project_json = json.dumps({
+            "name": proj_name,
+            "sessions": proj_sessions,
+            "stats": {
+                "total_sessions": len(proj_sessions),
+                "total_messages": total_messages,
+                "total_cost": round(total_cost, 2),
+                "total_tokens": total_tokens,
+            },
+            "tools": dict(sorted(proj_tools.items(), key=lambda x: -x[1])),
+            "skills": dict(sorted(proj_skills.items(), key=lambda x: -x[1])),
+        }, ensure_ascii=False)
+
+        html = _get_project_html_template()
+        html = html.replace('"__PROJECT_DATA__"', project_json)
+        html = html.replace('__VERSION__', VERSION)
+
+        out_path = projects_dir / f"{slug}.html"
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        count += 1
+
+    print(f"  Generated {count} project pages in {projects_dir}")
+    return slug_map
+
+
+def _get_project_html_template():
+    return '''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project Detail</title>
+<style>
+:root { --bg:#0f1117; --bg2:#1a1d27; --bg3:#242836; --border:#2d3348; --text:#e2e8f0; --text2:#94a3b8; --accent:#6366f1; --accent2:#818cf8; --green:#22c55e; --orange:#f59e0b; --blue:#3b82f6; --purple:#a855f7; --cyan:#06b6d4; --amber:#f59e0b; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,-apple-system,sans-serif; font-size:14px; }
+a { color:var(--accent2); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.header { background:var(--bg2); border-bottom:1px solid var(--border); padding:16px 24px; }
+.header-top { display:flex; align-items:center; gap:16px; margin-bottom:4px; }
+.header h1 { font-size:20px; font-weight:600; }
+.container { max-width:1400px; margin:0 auto; padding:20px; }
+.kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:24px; }
+.kpi-card { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:20px; text-align:center; }
+.kpi-card .label { color:var(--text2); font-size:12px; text-transform:uppercase; margin-bottom:8px; }
+.kpi-card .value { font-size:28px; font-weight:700; }
+.tools-section { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:24px; }
+.tools-section h3 { font-size:15px; font-weight:600; margin-bottom:12px; }
+.tool-pills { display:flex; flex-wrap:wrap; gap:8px; }
+.tool-pill { background:var(--bg3); padding:4px 12px; border-radius:16px; font-size:12px; display:flex; align-items:center; gap:6px; }
+.tool-pill .count { color:var(--cyan); font-weight:600; }
+.session-card { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:12px; transition:border-color .2s; }
+.session-card:hover { border-color:var(--accent); }
+.session-card .top { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.session-card .cost { color:var(--orange); font-weight:700; font-size:16px; }
+.session-card .info { display:flex; gap:16px; color:var(--text2); font-size:12px; flex-wrap:wrap; }
+.model-badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+.model-badge.opus { background:rgba(168,85,247,0.2); color:var(--purple); }
+.model-badge.sonnet { background:rgba(59,130,246,0.2); color:var(--blue); }
+.model-badge.haiku { background:rgba(34,197,94,0.2); color:var(--green); }
+@media (max-width:900px) { .kpi-grid { grid-template-columns:repeat(2,1fr); } }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-top"><a href="../index.html">&larr; Back to Dashboard</a></div>
+  <h1 id="projectTitle"></h1>
+</div>
+<div class="container">
+  <div class="kpi-grid" id="kpiGrid"></div>
+  <div class="tools-section" id="toolsSection"><h3>Top Tools</h3><div class="tool-pills" id="toolPills"></div></div>
+  <div id="skillsSection"></div>
+  <h3 style="margin-bottom:16px;font-size:15px">Sessions</h3>
+  <div id="sessionList"></div>
+</div>
+<script>
+const P = "__PROJECT_DATA__";
+const fmt = n => n.toLocaleString();
+const fmtUSD = n => '$'+n.toFixed(2);
+const fmtTokens = n => { if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'K'; return n.toString(); };
+function escHtml(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function modelClass(m) { const l=(m||'').toLowerCase(); if(l.includes('opus')) return 'opus'; if(l.includes('sonnet')) return 'sonnet'; if(l.includes('haiku')) return 'haiku'; return ''; }
+
+document.getElementById('projectTitle').textContent = P.name;
+document.getElementById('kpiGrid').innerHTML =
+  '<div class="kpi-card"><div class="label">Sessions</div><div class="value" style="color:var(--blue)">'+P.stats.total_sessions+'</div></div>' +
+  '<div class="kpi-card"><div class="label">Messages</div><div class="value" style="color:var(--green)">'+fmt(P.stats.total_messages)+'</div></div>' +
+  '<div class="kpi-card"><div class="label">Tokens</div><div class="value" style="color:var(--purple)">'+fmtTokens(P.stats.total_tokens)+'</div></div>' +
+  '<div class="kpi-card"><div class="label">Est. Cost</div><div class="value" style="color:var(--orange)">'+fmtUSD(P.stats.total_cost)+'</div></div>';
+
+document.getElementById('toolPills').innerHTML = Object.entries(P.tools).slice(0,20).map(([n,c]) =>
+  '<div class="tool-pill"><span>'+escHtml(n)+'</span><span class="count">'+c+'x</span></div>'
+).join('');
+
+if (Object.keys(P.skills).length>0) {
+  document.getElementById('skillsSection').innerHTML =
+    '<div class="tools-section"><h3>Skills</h3><div class="tool-pills">' +
+    Object.entries(P.skills).map(([n,c]) =>
+      '<div class="tool-pill" style="border:1px solid rgba(168,85,247,0.3)"><span style="color:var(--purple)">'+escHtml(n)+'</span><span class="count" style="color:var(--purple)">'+c+'x</span></div>'
+    ).join('') + '</div></div>';
+}
+
+document.getElementById('sessionList').innerHTML = P.sessions.map(s =>
+  '<div class="session-card">' +
+    '<div class="top">' +
+      '<div>' +
+        '<span style="color:var(--text2);font-size:12px">'+new Date(s.start).toLocaleDateString()+' '+new Date(s.start).toLocaleTimeString()+'</span>' +
+        '<span class="model-badge '+modelClass(s.primary_model)+'" style="margin-left:8px">'+escHtml(s.primary_model)+'</span>' +
+        ((s.compactions||0)>0 ? '<span style="color:var(--amber);font-size:12px;margin-left:8px">&#9889; '+s.compactions+'</span>' : '') +
+      '</div>' +
+      '<div style="display:flex;gap:12px;align-items:center">' +
+        '<a href="../sessions/'+s.session_id+'.html" style="font-size:12px;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">Chat</a>' +
+        '<span class="cost">'+fmtUSD(s.cost)+'</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="info">' +
+      '<span>'+s.duration_min+'m</span>' +
+      '<span>'+s.messages+' msgs</span>' +
+      '<span>'+fmtTokens(s.input_tokens+s.output_tokens)+' tokens</span>' +
+      '<span>'+s.api_calls+' API calls</span>' +
+    '</div>' +
+  '</div>'
+).join('');
+</script>
+</body>
+</html>'''
+
+
 def main():
     print("Claude Code Statistics Extractor")
     print("=" * 50)
@@ -2977,6 +3138,12 @@ def main():
 
     print(f"\nGenerating session pages...")
     generate_session_pages(sessions, data["sessions"])
+
+    print(f"\nGenerating project pages...")
+    project_slugs = generate_project_pages(data["sessions"])
+    data["project_slugs"] = project_slugs
+    # Re-generate dashboard with project slug mapping
+    generate_dashboard(data)
 
     elapsed = time.time() - t0
     print(f"\n{'=' * 50}")
