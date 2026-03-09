@@ -1490,6 +1490,7 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
 <div class="header">
   <h1><span>__L_header_title_prefix__</span> __L_header_title_suffix__</h1>
   <div class="time-filter" id="timeFilter"></div>
+  <input type="text" id="projectFilter" placeholder="Filter projects..." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:6px;font-size:12px;width:180px;outline:none;" />
   <div class="meta" id="headerMeta"></div>
 </div>
 
@@ -1705,25 +1706,49 @@ const scaleDefaults = {
 // ── Filtered Data & Time Filter ────────────────────────────────────────
 let F = {};
 const charts = {};
+let currentDays = 0;
+let currentProjectFilter = '';
 
-function filterData(days) {
+function filterData(days, projectFilter) {
+  if (days !== undefined) currentDays = days;
+  if (projectFilter !== undefined) currentProjectFilter = projectFilter;
+
   let cutoff = '';
-  if (days > 0) {
+  if (currentDays > 0) {
     const d = new Date();
-    d.setDate(d.getDate() - days);
+    d.setDate(d.getDate() - currentDays);
     cutoff = d.toISOString().slice(0, 10);
   }
 
-  // Filter date-indexed arrays
-  F.daily_costs = days === 0 ? D.daily_costs : D.daily_costs.filter(r => r.date >= cutoff);
-  F.daily_messages = days === 0 ? D.daily_messages : D.daily_messages.filter(r => r.date >= cutoff);
+  const pf = currentProjectFilter.toLowerCase().trim();
+
+  // Filter sessions by date AND project
+  let filteredSessions = D.sessions;
+  if (cutoff) filteredSessions = filteredSessions.filter(s => s.date >= cutoff);
+  if (pf) filteredSessions = filteredSessions.filter(s => (s.project || '').toLowerCase().includes(pf));
+  F.sessions = filteredSessions;
+
+  // Rebuild daily aggregates from filtered sessions
+  const dailyCostMap = {};
+  const dailyMsgMap = {};
+  F.sessions.forEach(s => {
+    if (!s.date) return;
+    if (!dailyMsgMap[s.date]) dailyMsgMap[s.date] = {date: s.date, messages: 0, sessions: 0};
+    dailyMsgMap[s.date].messages += s.messages || 0;
+    dailyMsgMap[s.date].sessions += 1;
+    if (!dailyCostMap[s.date]) dailyCostMap[s.date] = {date: s.date, total: 0};
+    dailyCostMap[s.date].total += s.cost || 0;
+    Object.entries(s.model_breakdown || {}).forEach(([model, d]) => {
+      dailyCostMap[s.date][model] = (dailyCostMap[s.date][model] || 0) + (d.cost || 0);
+    });
+  });
+  const allDates = [...new Set([...Object.keys(dailyCostMap), ...Object.keys(dailyMsgMap)])].sort();
+  F.daily_costs = allDates.map(d => dailyCostMap[d] || {date: d, total: 0});
+  F.daily_messages = allDates.map(d => dailyMsgMap[d] || {date: d, messages: 0, sessions: 0});
 
   // Recalculate cumulative costs from filtered daily costs
   let cum = 0;
   F.cumulative_costs = F.daily_costs.map(r => { cum += r.total; return {date: r.date, cost: cum}; });
-
-  // Filter sessions
-  F.sessions = days === 0 ? D.sessions : D.sessions.filter(s => s.date >= cutoff);
 
   // Recalculate model_summary from filtered sessions
   const modelMap = {};
@@ -1829,8 +1854,8 @@ function initTimeFilter() {
   });
 }
 
-function applyFilter(days) {
-  filterData(days);
+function applyFilter(days, projectFilter) {
+  filterData(days, projectFilter);
 
   // Destroy all existing Chart.js instances
   Object.keys(charts).forEach(k => { if (charts[k]) { charts[k].destroy(); delete charts[k]; } });
@@ -2666,8 +2691,13 @@ document.getElementById('filterSort').addEventListener('change', () => { session
 document.getElementById('filterSearch').addEventListener('input', () => { sessionPage = 0; renderSessionList(); });
 
 // ── Init ───────────────────────────────────────────────────────────────
-filterData(0);
+filterData(0, '');
 initTimeFilter();
+let pfTimer;
+document.getElementById('projectFilter').addEventListener('input', function() {
+  clearTimeout(pfTimer);
+  pfTimer = setTimeout(() => applyFilter(undefined, this.value), 300);
+});
 initTabs();
 renderKPI();
 renderCosts();
