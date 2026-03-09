@@ -85,11 +85,18 @@ PLAN_HISTORY = CONFIG.get("plan_history", [])
 
 # ── Pricing (USD per 1M tokens) ───────────────────────────────────────────
 PRICING = {
+    # Claude 4.6
     "claude-opus-4-6": {
         "input": 5.00, "output": 25.00,
         "cache_read": 0.50, "cache_write_5m": 6.25, "cache_write_1h": 10.00,
         "display": "Opus 4.6"
     },
+    "claude-sonnet-4-6": {
+        "input": 3.00, "output": 15.00,
+        "cache_read": 0.30, "cache_write_5m": 3.75, "cache_write_1h": 6.00,
+        "display": "Sonnet 4.6"
+    },
+    # Claude 4.5
     "claude-opus-4-5-20251101": {
         "input": 5.00, "output": 25.00,
         "cache_read": 0.50, "cache_write_5m": 6.25, "cache_write_1h": 10.00,
@@ -105,12 +112,52 @@ PRICING = {
         "cache_read": 0.10, "cache_write_5m": 1.25, "cache_write_1h": 2.00,
         "display": "Haiku 4.5"
     },
+    # Claude 4.1
+    "claude-opus-4-1-20250805": {
+        "input": 15.00, "output": 75.00,
+        "cache_read": 1.50, "cache_write_5m": 18.75, "cache_write_1h": 30.00,
+        "display": "Opus 4.1"
+    },
+    # Claude 4.0
+    "claude-opus-4-20250514": {
+        "input": 15.00, "output": 75.00,
+        "cache_read": 1.50, "cache_write_5m": 18.75, "cache_write_1h": 30.00,
+        "display": "Opus 4"
+    },
+    "claude-sonnet-4-20250514": {
+        "input": 3.00, "output": 15.00,
+        "cache_read": 0.30, "cache_write_5m": 3.75, "cache_write_1h": 6.00,
+        "display": "Sonnet 4"
+    },
+    # Claude 3.7
+    "claude-sonnet-3-7-20250219": {
+        "input": 3.00, "output": 15.00,
+        "cache_read": 0.30, "cache_write_5m": 3.75, "cache_write_1h": 6.00,
+        "display": "Sonnet 3.7"
+    },
+    # Claude 3.5
+    "claude-haiku-3-5-20241022": {
+        "input": 0.80, "output": 4.00,
+        "cache_read": 0.08, "cache_write_5m": 1.00, "cache_write_1h": 1.60,
+        "display": "Haiku 3.5"
+    },
+    # Claude 3
+    "claude-3-opus-20240229": {
+        "input": 15.00, "output": 75.00,
+        "cache_read": 1.50, "cache_write_5m": 18.75, "cache_write_1h": 30.00,
+        "display": "Opus 3"
+    },
+    "claude-3-haiku-20240307": {
+        "input": 0.25, "output": 1.25,
+        "cache_read": 0.03, "cache_write_5m": 0.30, "cache_write_1h": 0.50,
+        "display": "Haiku 3"
+    },
 }
 
-# Fallback for unknown models
+# Fallback for unknown models (use mid-range pricing)
 DEFAULT_PRICING = {
-    "input": 5.00, "output": 25.00,
-    "cache_read": 0.50, "cache_write_5m": 6.25, "cache_write_1h": 10.00,
+    "input": 3.00, "output": 15.00,
+    "cache_read": 0.30, "cache_write_5m": 3.75, "cache_write_1h": 6.00,
     "display": "Unknown"
 }
 
