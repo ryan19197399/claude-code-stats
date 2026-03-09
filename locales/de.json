@@ -36,7 +36,8 @@
     "th_output": "Output",
     "th_input": "Input",
     "th_cache_read": "Cache Read",
-    "th_api_calls": "API Calls"
+    "th_api_calls": "API Calls",
+    "cache_efficiency": "Cache-Effizienz"
   },
   "activity": {
     "daily_messages": "Nachrichten pro Tag",
@@ -44,7 +45,8 @@
     "hourly": "Tageszeit-Verteilung (Nachrichten)",
     "weekday": "Wochentags-Verteilung",
     "daily_sessions": "Sessions pro Tag",
-    "sessions_label": "Sessions"
+    "sessions_label": "Sessions",
+    "heatmap": "Aktivität"
   },
   "weekdays": ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
   "projects": {
@@ -147,6 +149,8 @@
     "snapshot_size": "Snapshot-Gr\u00f6\u00dfe",
     "todos_total": "Todos gesamt",
     "todos_completed": "Todos erledigt",
-    "completion_rate": "Completion Rate"
+    "completion_rate": "Completion Rate",
+    "skills": "Verwendete Skills",
+    "hooks": "Ausgeführte Hooks"
   }
 }

@@ -36,7 +36,8 @@
     "th_output": "Output",
     "th_input": "Input",
     "th_cache_read": "Cache Read",
-    "th_api_calls": "API Calls"
+    "th_api_calls": "API Calls",
+    "cache_efficiency": "Cache Efficiency"
   },
   "activity": {
     "daily_messages": "Messages per Day",
@@ -44,7 +45,8 @@
     "hourly": "Time of Day Distribution (Messages)",
     "weekday": "Weekday Distribution",
     "daily_sessions": "Sessions per Day",
-    "sessions_label": "Sessions"
+    "sessions_label": "Sessions",
+    "heatmap": "Activity"
   },
   "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
   "projects": {
@@ -147,6 +149,8 @@
     "snapshot_size": "Snapshot Size",
     "todos_total": "Todos Total",
     "todos_completed": "Todos Completed",
-    "completion_rate": "Completion Rate"
+    "completion_rate": "Completion Rate",
+    "skills": "Skills Used",
+    "hooks": "Hooks Fired"
   }
 }

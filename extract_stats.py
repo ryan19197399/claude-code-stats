@@ -73,7 +73,7 @@ else:
     MIGRATION_STATS_CACHE = None
     MIGRATION_HISTORY_JSONL = None
 
-VERSION = "0.2.1"
+VERSION = "0.3.1"
 
 OUTPUT_DIR = Path(__file__).parent / "public"
 DASHBOARD_DATA = OUTPUT_DIR / "dashboard_data.json"
@@ -584,6 +584,10 @@ def parse_session_transcripts():
                                         "calls": 0,
                                     }),
                                     "tools": defaultdict(int),
+                                    "skills": defaultdict(int),
+                                    "hooks": defaultdict(int),
+                                    "compactions": 0,
+                                    "compaction_events": [],
                                     "message_count": 0,
                                     "user_message_count": 0,
                                     "assistant_message_count": 0,
@@ -666,6 +670,30 @@ def parse_session_transcripts():
                                     if isinstance(block, dict) and block.get("type") == "tool_use":
                                         tool_name = block.get("name", "unknown")
                                         sess["tools"][tool_name] += 1
+                                        # Track skills specifically
+                                        if tool_name == "Skill":
+                                            skill_name = block.get("input", {}).get("skill", "unknown")
+                                            sess["skills"][skill_name] += 1
+
+                            elif msg_type == "progress":
+                                data_obj = obj.get("data", {})
+                                if data_obj.get("type") == "hook_progress":
+                                    hook_name = data_obj.get("hookName", "")
+                                    if hook_name:
+                                        sess["hooks"][hook_name] += 1
+
+                            elif msg_type == "summary":
+                                sess["compactions"] += 1
+                                ts_str = ""
+                                if timestamp:
+                                    if isinstance(timestamp, str):
+                                        ts_str = timestamp
+                                    elif isinstance(timestamp, (int, float)):
+                                        try:
+                                            ts_str = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).isoformat()
+                                        except (ValueError, OSError):
+                                            ts_str = str(timestamp)
+                                sess["compaction_events"].append({"timestamp": ts_str})
 
                 except Exception as e:
                     print(f"      ERROR reading {jsonl_file.name}: {e}")
@@ -675,6 +703,139 @@ def parse_session_transcripts():
     print(f"  Parsed {total_files} files, {total_lines} lines, {len(sessions)} sessions"
           f" (migration: {migration_count}, current: {current_count})")
     return sessions
+
+
+def extract_session_messages(session_id, project_dir_name):
+    """Extract per-message data for a single session for replay view."""
+    messages = []
+
+    # Search for the JSONL file
+    sources = []
+    if MIGRATION_ENABLED and MIGRATION_PROJECTS_DIR and MIGRATION_PROJECTS_DIR.exists():
+        sources.append(MIGRATION_PROJECTS_DIR)
+    if PROJECTS_DIR.exists():
+        sources.append(PROJECTS_DIR)
+
+    jsonl_path = None
+    for projects_dir in sources:
+        candidate = projects_dir / project_dir_name / f"{session_id}.jsonl"
+        if candidate.exists():
+            jsonl_path = candidate
+            break
+        # Also search subdirectories
+        for f in (projects_dir / project_dir_name).rglob(f"{session_id}.jsonl"):
+            jsonl_path = f
+            break
+        if jsonl_path:
+            break
+
+    if not jsonl_path:
+        return messages
+
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = obj.get("type")
+            timestamp = obj.get("timestamp", "")
+
+            if msg_type == "user":
+                message = obj.get("message", {})
+                content = message.get("content", "")
+                # Skip tool results
+                if isinstance(content, list):
+                    texts = []
+                    is_tool_result = False
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "tool_result":
+                                is_tool_result = True
+                                break
+                            if block.get("type") == "text":
+                                texts.append(block.get("text", ""))
+                    if is_tool_result:
+                        continue
+                    content = "\n".join(texts)
+
+                if not content or content.startswith("<command") or content.startswith("<local-command"):
+                    continue
+
+                messages.append({
+                    "role": "user",
+                    "content": content,
+                    "timestamp": timestamp,
+                })
+
+            elif msg_type == "assistant":
+                message = obj.get("message", {})
+                model = message.get("model", "unknown")
+                usage = message.get("usage", {})
+                content_blocks = message.get("content", [])
+
+                text_parts = []
+                tools = []
+                for block in content_blocks:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif block.get("type") == "tool_use":
+                            tool_name = block.get("name", "")
+                            tool_input = block.get("input", {})
+                            tool_info = {"name": tool_name}
+                            if tool_name == "Bash":
+                                tool_info["detail"] = tool_input.get("command", "")[:200]
+                            elif tool_name in ("Read", "Edit", "Write"):
+                                tool_info["detail"] = tool_input.get("file_path", "")
+                            elif tool_name in ("Grep", "Glob"):
+                                tool_info["detail"] = tool_input.get("pattern", "")
+                            elif tool_name == "Skill":
+                                tool_info["detail"] = tool_input.get("skill", "")
+                            elif tool_name == "Agent":
+                                tool_info["detail"] = tool_input.get("description", "")[:100]
+                            tools.append(tool_info)
+
+                text = "\n".join(text_parts)
+                if not text and not tools:
+                    continue
+
+                messages.append({
+                    "role": "assistant",
+                    "content": text,
+                    "model": get_model_display(model),
+                    "tokens": {
+                        "input": usage.get("input_tokens", 0),
+                        "output": usage.get("output_tokens", 0),
+                        "cache_read": usage.get("cache_read_input_tokens", 0),
+                        "cache_write": usage.get("cache_creation_input_tokens", 0),
+                    },
+                    "cost": round(calc_cost(model, usage), 4),
+                    "tools": tools,
+                    "timestamp": timestamp,
+                })
+
+            elif msg_type == "progress":
+                data_obj = obj.get("data", {})
+                if data_obj.get("type") == "hook_progress":
+                    messages.append({
+                        "role": "hook",
+                        "hook_event": data_obj.get("hookEvent", ""),
+                        "hook_name": data_obj.get("hookName", ""),
+                        "timestamp": timestamp,
+                    })
+
+            elif msg_type == "summary":
+                messages.append({
+                    "role": "compaction",
+                    "timestamp": timestamp,
+                })
+
+    return messages
 
 
 def build_plan_analysis(daily_cost_series, session_list):
@@ -931,6 +1092,10 @@ def build_dashboard_data(sessions, stats_cache, dot_claude, history,
             "primary_model": primary_model,
             "model_breakdown": model_breakdown,
             "tools": dict(sess["tools"]),
+            "skills": dict(sess["skills"]),
+            "hooks": dict(sess["hooks"]),
+            "compactions": sess["compactions"],
+            "compaction_events": sess["compaction_events"],
             "first_prompt": sess["first_prompt"],
             "slug": sess["slug"],
             "file_size_mb": round(sess["file_size"] / 1_048_576, 2),
@@ -1018,6 +1183,23 @@ def build_dashboard_data(sessions, stats_cache, dot_claude, history,
 
     cost_by_type = {k: round(v, 2) for k, v in cost_by_type.items()}
 
+    # Cache efficiency: what would cache_read tokens have cost at full input price?
+    cache_savings = 0.0
+    for mname_display, mdata in model_totals.items():
+        model_id = None
+        for mid, mp in PRICING.items():
+            if mp["display"] == mname_display:
+                model_id = mid
+                break
+        if not model_id:
+            model_id = list(PRICING.keys())[0]
+        p = PRICING[model_id]
+        full_price = mdata["cache_read_tokens"] * p["input"] / 1_000_000
+        cache_price = mdata["cache_read_tokens"] * p["cache_read"] / 1_000_000
+        cache_savings += full_price - cache_price
+
+    cost_by_type["cache_savings"] = round(cache_savings, 2)
+
     # ── Global Tool Aggregation ───────────────────────────────────────────
     global_tools = defaultdict(int)
     for s in session_list:
@@ -1025,6 +1207,22 @@ def build_dashboard_data(sessions, stats_cache, dot_claude, history,
             global_tools[tool_name] += count
     tool_ranking = sorted(global_tools.items(), key=lambda x: -x[1])
     tool_summary = [{"name": n, "count": c} for n, c in tool_ranking]
+
+    # Global Skills Aggregation
+    global_skills = defaultdict(int)
+    for s in session_list:
+        for skill_name, count in s.get("skills", {}).items():
+            global_skills[skill_name] += count
+    skill_ranking = sorted(global_skills.items(), key=lambda x: -x[1])
+    skill_summary = [{"name": n, "count": c} for n, c in skill_ranking]
+
+    # Global Hooks Aggregation
+    global_hooks = defaultdict(int)
+    for s in session_list:
+        for hook_name, count in s.get("hooks", {}).items():
+            global_hooks[hook_name] += count
+    hook_ranking = sorted(global_hooks.items(), key=lambda x: -x[1])
+    hook_summary = [{"name": n, "count": c} for n, c in hook_ranking]
 
     dc = dot_claude
     account = dc.get("oauthAccount", {})
@@ -1065,6 +1263,8 @@ def build_dashboard_data(sessions, stats_cache, dot_claude, history,
         "projects": project_list,
         "sessions": session_list,
         "tool_summary": tool_summary,
+        "skill_summary": skill_summary,
+        "hook_summary": hook_summary,
         "insights": {
             "plans": plans or [],
             "plugins": plugins or {},
@@ -1265,6 +1465,20 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
 .plugin-status.active { background:rgba(34,197,94,0.2); color:var(--green); }
 .plugin-status.inactive { background:rgba(239,68,68,0.2); color:var(--red); }
 
+/* Activity Heatmap */
+.heatmap-container { margin-bottom:20px; }
+.heatmap-scroll { overflow-x:auto; }
+.heatmap-grid { display:flex; gap:2px; }
+.heatmap-col { display:flex; flex-direction:column; gap:2px; }
+.heatmap-cell { width:13px; height:13px; border-radius:2px; position:relative; }
+.heatmap-cell:hover::after { content:attr(data-tip); position:absolute; bottom:18px; left:50%; transform:translateX(-50%); background:var(--bg2); border:1px solid var(--border); padding:4px 8px; border-radius:4px; font-size:11px; white-space:nowrap; z-index:10; color:var(--text); pointer-events:none; }
+.heatmap-labels { display:flex; flex-direction:column; gap:2px; margin-right:4px; padding-top:18px; }
+.heatmap-labels span { height:13px; font-size:10px; color:var(--text2); line-height:13px; }
+.heatmap-legend { display:flex; align-items:center; gap:4px; margin-top:8px; justify-content:flex-end; font-size:11px; color:var(--text2); }
+.heatmap-legend .cell { width:13px; height:13px; border-radius:2px; }
+.heatmap-months { display:flex; font-size:10px; color:var(--text2); margin-bottom:2px; }
+.heatmap-months span { text-align:center; }
+
 @media (max-width:900px) {
   .chart-grid { grid-template-columns:1fr; }
   .kpi-grid { grid-template-columns:repeat(2,1fr); }
@@ -1276,6 +1490,7 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
 <div class="header">
   <h1><span>__L_header_title_prefix__</span> __L_header_title_suffix__</h1>
   <div class="time-filter" id="timeFilter"></div>
+  <input type="text" id="projectFilter" placeholder="Filter projects..." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:6px;font-size:12px;width:180px;outline:none;" />
   <div class="meta" id="headerMeta"></div>
 </div>
 
@@ -1305,9 +1520,34 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
         </table>
       </div>
     </div>
+    <div class="chart-grid">
+      <div class="chart-box" id="cacheEfficiency">
+        <h3>__L_costs_cache_efficiency__</h3>
+        <div class="kpi-grid" id="cacheKpi"></div>
+      </div>
+    </div>
   </div>
 
   <div class="tab-content" id="tab-activity">
+    <div class="chart-box heatmap-container">
+      <h3>__L_activity_heatmap__</h3>
+      <div class="heatmap-scroll">
+        <div id="heatmapMonths" class="heatmap-months"></div>
+        <div style="display:flex">
+          <div class="heatmap-labels"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div>
+          <div id="activityHeatmap" class="heatmap-grid"></div>
+        </div>
+      </div>
+      <div class="heatmap-legend">
+        <span>Less</span>
+        <div class="cell" style="background:var(--bg3)"></div>
+        <div class="cell" style="background:rgba(99,102,241,0.2)"></div>
+        <div class="cell" style="background:rgba(99,102,241,0.4)"></div>
+        <div class="cell" style="background:rgba(99,102,241,0.7)"></div>
+        <div class="cell" style="background:var(--accent)"></div>
+        <span>More</span>
+      </div>
+    </div>
     <div class="chart-grid full">
       <div class="chart-box"><h3>__L_activity_daily_messages__</h3><canvas id="chartDailyMsgs"></canvas></div>
     </div>
@@ -1417,6 +1657,16 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
         <div id="miscStats"></div>
       </div>
     </div>
+    <div class="chart-grid">
+      <div class="chart-box">
+        <h3>__L_insights_skills__</h3>
+        <div id="skillsList"></div>
+      </div>
+      <div class="chart-box">
+        <h3>__L_insights_hooks__</h3>
+        <div id="hooksList"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1456,25 +1706,49 @@ const scaleDefaults = {
 // ── Filtered Data & Time Filter ────────────────────────────────────────
 let F = {};
 const charts = {};
+let currentDays = 0;
+let currentProjectFilter = '';
 
-function filterData(days) {
+function filterData(days, projectFilter) {
+  if (days !== undefined) currentDays = days;
+  if (projectFilter !== undefined) currentProjectFilter = projectFilter;
+
   let cutoff = '';
-  if (days > 0) {
+  if (currentDays > 0) {
     const d = new Date();
-    d.setDate(d.getDate() - days);
+    d.setDate(d.getDate() - currentDays);
     cutoff = d.toISOString().slice(0, 10);
   }
 
-  // Filter date-indexed arrays
-  F.daily_costs = days === 0 ? D.daily_costs : D.daily_costs.filter(r => r.date >= cutoff);
-  F.daily_messages = days === 0 ? D.daily_messages : D.daily_messages.filter(r => r.date >= cutoff);
+  const pf = currentProjectFilter.toLowerCase().trim();
+
+  // Filter sessions by date AND project
+  let filteredSessions = D.sessions;
+  if (cutoff) filteredSessions = filteredSessions.filter(s => s.date >= cutoff);
+  if (pf) filteredSessions = filteredSessions.filter(s => (s.project || '').toLowerCase().includes(pf));
+  F.sessions = filteredSessions;
+
+  // Rebuild daily aggregates from filtered sessions
+  const dailyCostMap = {};
+  const dailyMsgMap = {};
+  F.sessions.forEach(s => {
+    if (!s.date) return;
+    if (!dailyMsgMap[s.date]) dailyMsgMap[s.date] = {date: s.date, messages: 0, sessions: 0};
+    dailyMsgMap[s.date].messages += s.messages || 0;
+    dailyMsgMap[s.date].sessions += 1;
+    if (!dailyCostMap[s.date]) dailyCostMap[s.date] = {date: s.date, total: 0};
+    dailyCostMap[s.date].total += s.cost || 0;
+    Object.entries(s.model_breakdown || {}).forEach(([model, d]) => {
+      dailyCostMap[s.date][model] = (dailyCostMap[s.date][model] || 0) + (d.cost || 0);
+    });
+  });
+  const allDates = [...new Set([...Object.keys(dailyCostMap), ...Object.keys(dailyMsgMap)])].sort();
+  F.daily_costs = allDates.map(d => dailyCostMap[d] || {date: d, total: 0});
+  F.daily_messages = allDates.map(d => dailyMsgMap[d] || {date: d, messages: 0, sessions: 0});
 
   // Recalculate cumulative costs from filtered daily costs
   let cum = 0;
   F.cumulative_costs = F.daily_costs.map(r => { cum += r.total; return {date: r.date, cost: cum}; });
-
-  // Filter sessions
-  F.sessions = days === 0 ? D.sessions : D.sessions.filter(s => s.date >= cutoff);
 
   // Recalculate model_summary from filtered sessions
   const modelMap = {};
@@ -1498,6 +1772,7 @@ function filterData(days) {
     output: D.cost_by_token_type.output * ratio,
     cache_read: D.cost_by_token_type.cache_read * ratio,
     cache_write: D.cost_by_token_type.cache_write * ratio,
+    cache_savings: (D.cost_by_token_type.cache_savings || 0) * ratio,
   };
 
   // Recalculate projects from filtered sessions
@@ -1579,8 +1854,8 @@ function initTimeFilter() {
   });
 }
 
-function applyFilter(days) {
-  filterData(days);
+function applyFilter(days, projectFilter) {
+  filterData(days, projectFilter);
 
   // Destroy all existing Chart.js instances
   Object.keys(charts).forEach(k => { if (charts[k]) { charts[k].destroy(); delete charts[k]; } });
@@ -1741,6 +2016,77 @@ function renderCosts() {
     });
     tbody.appendChild(tr);
   });
+
+  // Cache Efficiency
+  const ct = F.cost_by_token_type;
+  const cacheKpi = document.getElementById('cacheKpi');
+  if (cacheKpi && ct) {
+    const cacheRead = F.sessions.reduce((s,se) => s + (se.cache_read_tokens || 0), 0);
+    const cacheWrite = F.sessions.reduce((s,se) => s + (se.cache_write_tokens || 0), 0);
+    cacheKpi.innerHTML = [
+      '<div class="kpi-card"><div class="label">Cache Read Tokens</div>',
+      '<div class="value" style="color:var(--cyan)">' + fmtTokens(cacheRead) + '</div></div>',
+      '<div class="kpi-card"><div class="label">Cache Write Tokens</div>',
+      '<div class="value" style="color:var(--blue)">' + fmtTokens(cacheWrite) + '</div></div>',
+      '<div class="kpi-card savings"><div class="label">Estimated Cache Savings</div>',
+      '<div class="value" style="color:var(--green)">' + fmtUSD(ct.cache_savings || 0) + '</div>',
+      '<div class="sub">vs. full input pricing</div></div>'
+    ].join('');
+  }
+}
+
+function renderHeatmap() {
+  const container = document.getElementById('activityHeatmap');
+  const monthsEl = document.getElementById('heatmapMonths');
+  if (!container) return;
+  const msgMap = {};
+  F.daily_messages.forEach(d => { msgMap[d.date] = d.messages; });
+  const today = new Date();
+  const startDate = new Date(today);
+  startDate.setDate(startDate.getDate() - (24 * 7) + 1);
+  while (startDate.getDay() !== 1) startDate.setDate(startDate.getDate() - 1);
+  let maxMsg = 0;
+  const td = new Date(startDate);
+  while (td <= today) { const k = td.toISOString().slice(0,10); maxMsg = Math.max(maxMsg, msgMap[k]||0); td.setDate(td.getDate()+1); }
+  let html = '';
+  const weeks = [];
+  const d = new Date(startDate);
+  let cw = [];
+  while (d <= today) {
+    const k = d.toISOString().slice(0,10);
+    const m = msgMap[k]||0;
+    let bg = 'var(--bg3)';
+    if (m > 0 && maxMsg > 0) {
+      const r = m/maxMsg;
+      if (r > 0.7) bg = 'var(--accent)';
+      else if (r > 0.4) bg = 'rgba(99,102,241,0.7)';
+      else if (r > 0.2) bg = 'rgba(99,102,241,0.4)';
+      else bg = 'rgba(99,102,241,0.2)';
+    }
+    cw.push('<div class="heatmap-cell" style="background:'+bg+'" data-tip="'+k+': '+m+' messages"></div>');
+    if (d.getDay()===0) { while(cw.length<7) cw.push('<div class="heatmap-cell" style="background:transparent"></div>'); weeks.push(cw); cw=[]; }
+    d.setDate(d.getDate()+1);
+  }
+  if (cw.length>0) { while(cw.length<7) cw.push('<div class="heatmap-cell" style="background:transparent"></div>'); weeks.push(cw); }
+  weeks.forEach(w => { html += '<div class="heatmap-col">'+w.join('')+'</div>'; });
+  container.innerHTML = html;
+  if (monthsEl) {
+    const months = [];
+    const md = new Date(startDate);
+    let lastMonth = -1, weekIdx = 0;
+    while (md <= today) {
+      if (md.getDay()===1) { if(md.getMonth()!==lastMonth) { months.push({idx:weekIdx,label:md.toLocaleString('default',{month:'short'})}); lastMonth=md.getMonth(); } weekIdx++; }
+      md.setDate(md.getDate()+1);
+    }
+    monthsEl.innerHTML = '';
+    monthsEl.style.paddingLeft = '20px';
+    months.forEach((m,i) => {
+      const span = document.createElement('span');
+      span.textContent = m.label;
+      span.style.width = ((i<months.length-1 ? months[i+1].idx-m.idx : weekIdx-m.idx)*15)+'px';
+      monthsEl.appendChild(span);
+    });
+  }
 }
 
 // ── Tab 2: Activity ────────────────────────────────────────────────────
@@ -1781,6 +2127,7 @@ function renderActivity() {
     options: { responsive: true, maintainAspectRatio: false,
       plugins: { legend: { labels: { color: '#94a3b8' } } }, scales: scaleDefaults }
   });
+  renderHeatmap();
 }
 
 // ── Tab 3: Projects ────────────────────────────────────────────────────
@@ -1808,8 +2155,10 @@ function renderProjectTable(sortKey, sortDir) {
   tbody.textContent = '';
   sorted.forEach(p => {
     const tr = document.createElement('tr');
+    const slug = D.project_slugs && D.project_slugs[p.name];
+    const nameCell = slug ? '<a href="projects/'+slug+'.html">'+escHtml(p.name)+'</a>' : escHtml(p.name);
     const cells = [
-      {val: p.name, cls: ''},
+      {html: nameCell, cls: ''},
       {val: p.sessions, cls: 'num'},
       {val: fmt(p.messages), cls: 'num'},
       {val: fmtUSD(p.cost), cls: 'num'},
@@ -1819,7 +2168,7 @@ function renderProjectTable(sortKey, sortDir) {
     cells.forEach(c => {
       const td = document.createElement('td');
       if (c.cls) td.className = c.cls;
-      td.textContent = c.val;
+      if (c.html) { td.innerHTML = c.html; } else { td.textContent = c.val; }
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -1880,7 +2229,12 @@ function buildSessionCard(s) {
   const top = document.createElement('div'); top.className = 'top';
   const projSpan = document.createElement('span'); projSpan.className = 'project'; projSpan.textContent = s.project;
   const costSpan = document.createElement('span'); costSpan.className = 'cost'; costSpan.textContent = fmtUSD(s.cost);
-  top.appendChild(projSpan); top.appendChild(costSpan);
+  const rightGroup = document.createElement('span'); rightGroup.style.display = 'flex'; rightGroup.style.alignItems = 'center';
+  const chatLink = document.createElement('a'); chatLink.href = 'sessions/' + s.session_id + '.html';
+  chatLink.textContent = 'Chat'; chatLink.addEventListener('click', function(e) { e.stopPropagation(); });
+  chatLink.style.cssText = 'color:var(--accent2);font-size:12px;padding:4px 10px;border:1px solid var(--accent);border-radius:6px;margin-right:8px;text-decoration:none';
+  rightGroup.appendChild(chatLink); rightGroup.appendChild(costSpan);
+  top.appendChild(projSpan); top.appendChild(rightGroup);
   card.appendChild(top);
 
   // Info row
@@ -1894,6 +2248,11 @@ function buildSessionCard(s) {
   infoParts.forEach(t => { const sp = document.createElement('span'); sp.textContent = t; info.appendChild(sp); });
   const badge = document.createElement('span'); badge.className = 'model-badge ' + modelClass; badge.textContent = s.primary_model;
   info.appendChild(badge);
+  if (s.compactions > 0) {
+    const compSpan = document.createElement('span'); compSpan.style.color = 'var(--amber)';
+    compSpan.innerHTML = '&#9889; ' + s.compactions;
+    info.appendChild(compSpan);
+  }
   card.appendChild(info);
 
   // Prompt
@@ -2282,6 +2641,35 @@ function renderInsights() {
     miscGrid.appendChild(div);
   });
   miscDiv.appendChild(miscGrid);
+
+  // Skills
+  const skillsEl = document.getElementById('skillsList');
+  if (skillsEl && D.skill_summary && D.skill_summary.length > 0) {
+    skillsEl.innerHTML = D.skill_summary.map(s =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border)">' +
+      '<span style="font-size:13px;color:var(--text)">' + escHtml(s.name) + '</span>' +
+      '<span class="tool-tag" style="background:rgba(168,85,247,0.2);color:var(--purple)">' + s.count + 'x</span>' +
+      '</div>'
+    ).join('');
+  } else if (skillsEl) {
+    skillsEl.innerHTML = '<p style="color:var(--text2);font-size:13px;padding:12px">No skills used yet</p>';
+  }
+
+  // Hooks
+  const hooksEl = document.getElementById('hooksList');
+  if (hooksEl && D.hook_summary && D.hook_summary.length > 0) {
+    hooksEl.innerHTML = D.hook_summary.map(h => {
+      const parts = h.name.split(':');
+      const event = parts[0] || '';
+      const name = parts.slice(1).join(':') || h.name;
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border)">' +
+        '<div><span class="model-badge" style="background:rgba(245,158,11,0.2);color:var(--orange);font-size:10px;margin-right:6px">' + escHtml(event) + '</span><span style="font-size:13px">' + escHtml(name) + '</span></div>' +
+        '<span class="tool-tag">' + h.count + 'x</span>' +
+        '</div>';
+    }).join('');
+  } else if (hooksEl) {
+    hooksEl.innerHTML = '<p style="color:var(--text2);font-size:13px;padding:12px">No hooks fired yet</p>';
+  }
 }
 
 // ── Sortable Tables ────────────────────────────────────────────────────
@@ -2303,8 +2691,13 @@ document.getElementById('filterSort').addEventListener('change', () => { session
 document.getElementById('filterSearch').addEventListener('input', () => { sessionPage = 0; renderSessionList(); });
 
 // ── Init ───────────────────────────────────────────────────────────────
-filterData(0);
+filterData(0, '');
 initTimeFilter();
+let pfTimer;
+document.getElementById('projectFilter').addEventListener('input', function() {
+  clearTimeout(pfTimer);
+  pfTimer = setTimeout(() => applyFilter(undefined, this.value), 300);
+});
 initTabs();
 renderKPI();
 renderCosts();
@@ -2315,6 +2708,456 @@ renderPlan();
 renderInsights();
 </script>
 <div style="text-align:center;padding:24px 0 12px;color:#475569;font-size:11px;">v__VERSION__</div>
+</body>
+</html>'''
+
+
+def generate_session_pages(sessions, session_list):
+    """Generate individual HTML pages for each session."""
+    sessions_dir = OUTPUT_DIR / "sessions"
+    sessions_dir.mkdir(exist_ok=True)
+
+    count = 0
+    for sess_data in session_list:
+        sid = sess_data["session_id"]
+        project_dir = sess_data.get("project_dir", "")
+        messages = extract_session_messages(sid, project_dir)
+
+        if not messages:
+            continue
+
+        session_json = json.dumps({
+            "session": sess_data,
+            "messages": messages,
+        }, ensure_ascii=False)
+
+        html = _get_session_html_template()
+        html = html.replace('"__SESSION_DATA__"', session_json)
+        html = html.replace('__VERSION__', VERSION)
+
+        out_path = sessions_dir / f"{sid}.html"
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        count += 1
+
+    print(f"  Generated {count} session pages in {sessions_dir}")
+
+
+def _get_session_html_template():
+    return '''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Detail</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<style>
+:root { --bg:#0f1117; --bg2:#1a1d27; --bg3:#242836; --border:#2d3348; --text:#e2e8f0; --text2:#94a3b8; --accent:#6366f1; --accent2:#818cf8; --green:#22c55e; --orange:#f59e0b; --red:#ef4444; --blue:#3b82f6; --purple:#a855f7; --cyan:#06b6d4; --amber:#f59e0b; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,-apple-system,sans-serif; font-size:14px; }
+a { color:var(--accent2); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.header { background:var(--bg2); border-bottom:1px solid var(--border); padding:16px 24px; }
+.header-top { display:flex; align-items:center; gap:16px; margin-bottom:8px; }
+.header h1 { font-size:18px; font-weight:600; flex:1; }
+.session-meta { display:flex; gap:16px; color:var(--text2); font-size:12px; flex-wrap:wrap; }
+.session-meta span { display:flex; align-items:center; gap:4px; }
+.model-badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+.model-badge.opus { background:rgba(168,85,247,0.2); color:var(--purple); }
+.model-badge.sonnet { background:rgba(59,130,246,0.2); color:var(--blue); }
+.model-badge.haiku { background:rgba(34,197,94,0.2); color:var(--green); }
+.stats-bar { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; padding:16px 24px; background:var(--bg2); border-bottom:1px solid var(--border); }
+.stat-card { text-align:center; }
+.stat-card .label { font-size:11px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+.stat-card .value { font-size:20px; font-weight:700; }
+.main-layout { display:grid; grid-template-columns:2fr 1fr; gap:0; max-width:1600px; margin:0 auto; }
+.chat-panel { padding:0 0 20px 0; max-height:calc(100vh - 180px); overflow-y:auto; border-right:1px solid var(--border); }
+.chat-toolbar { position:sticky; top:0; z-index:10; background:var(--bg); padding:10px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; }
+.chat-toolbar .filter-group { display:flex; gap:0; }
+.chat-toolbar .filter-btn { padding:5px 14px; font-size:12px; font-weight:600; border:1px solid var(--border); background:var(--bg2); color:var(--text2); cursor:pointer; transition:all 0.15s; }
+.chat-toolbar .filter-btn:first-child { border-radius:6px 0 0 6px; }
+.chat-toolbar .filter-btn:last-child { border-radius:0 6px 6px 0; }
+.chat-toolbar .filter-btn:not(:first-child) { border-left:0; }
+.chat-toolbar .filter-btn.active { background:var(--accent); color:white; border-color:var(--accent); }
+.chat-toolbar .filter-btn.active + .filter-btn { border-left-color:var(--accent); }
+.chat-toolbar .copy-btn { margin-left:auto; padding:5px 12px; font-size:12px; font-weight:600; border:1px solid var(--border); background:var(--bg2); color:var(--text2); cursor:pointer; border-radius:6px; transition:all 0.15s; display:flex; align-items:center; gap:4px; }
+.chat-toolbar .copy-btn:hover { background:var(--bg3); color:var(--text); }
+.chat-toolbar .copy-btn.copied { background:rgba(34,197,94,0.15); border-color:var(--green); color:var(--green); }
+.chat-messages { padding:20px 24px; }
+.msg { margin-bottom:16px; padding:12px 16px; border-radius:10px; }
+.msg.user { background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.25); border-left:4px solid var(--green); }
+.msg.assistant { background:var(--bg3); border:1px solid var(--border); border-left:4px solid var(--purple); }
+.msg-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:12px; }
+.msg-role { width:24px; height:24px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; }
+.msg-role.user { background:var(--green); color:white; }
+.msg-role.assistant { background:var(--purple); color:white; }
+.msg-time { color:var(--text2); }
+.msg-model { margin-left:auto; }
+.msg-tokens { color:var(--text2); font-size:11px; font-family:monospace; }
+.msg-content { font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+.msg-content code { background:var(--bg); padding:1px 4px; border-radius:3px; font-size:12px; }
+.msg-content pre { background:var(--bg); border-radius:6px; padding:12px; margin:8px 0; overflow-x:auto; }
+.msg-content pre code { background:transparent; padding:0; }
+.msg-tools { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.tool-badge { background:var(--bg); padding:2px 8px; border-radius:4px; font-size:11px; color:var(--cyan); font-family:monospace; border:1px solid var(--border); max-width:350px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.msg-expand { color:var(--accent2); cursor:pointer; font-size:12px; margin-top:4px; }
+.marker { padding:6px 16px; margin-bottom:8px; font-size:11px; border-radius:6px; display:flex; align-items:center; gap:8px; }
+.marker.hook { background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); color:var(--amber); }
+.marker.compaction { background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:var(--red); }
+.sidebar { padding:20px; max-height:calc(100vh - 180px); overflow-y:auto; }
+.sidebar-card { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:12px; }
+.sidebar-card h4 { font-size:13px; font-weight:600; margin-bottom:10px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; }
+.sidebar-row { display:flex; justify-content:space-between; padding:4px 0; font-size:13px; }
+.sidebar-row .label { color:var(--text2); }
+.sidebar-row .val { font-weight:600; font-variant-numeric:tabular-nums; }
+.sidebar-tag { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; margin:2px; background:var(--bg3); }
+.compaction-timeline { margin-top:8px; }
+.compaction-event { padding:4px 8px; font-size:11px; color:var(--amber); border-left:2px solid var(--amber); margin-bottom:4px; }
+@media (max-width:1000px) { .main-layout { grid-template-columns:1fr; } .stats-bar { grid-template-columns:repeat(3,1fr); } }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-top">
+    <a href="../index.html">&larr; Back to Dashboard</a>
+    <h1 id="sessionTitle"></h1>
+  </div>
+  <div class="session-meta" id="sessionMeta"></div>
+</div>
+<div class="stats-bar" id="statsBar"></div>
+<div class="main-layout">
+  <div class="chat-panel">
+    <div class="chat-toolbar">
+      <div class="filter-group">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="user">User</button>
+        <button class="filter-btn" data-filter="assistant">Agent</button>
+      </div>
+      <button class="copy-btn" id="copyBtn">&#128203; Copy</button>
+    </div>
+    <div class="chat-messages" id="chatPanel"></div>
+  </div>
+  <div class="sidebar" id="sidebar"></div>
+</div>
+<script>
+const S = "__SESSION_DATA__";
+const sess = S.session;
+const msgs = S.messages;
+const fmt = n => n.toLocaleString();
+const fmtUSD = n => '$' + n.toFixed(4);
+const fmtTokens = n => { if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'K'; return n.toString(); };
+function escHtml(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function fmtTime(ts) { if(!ts) return ''; const d=new Date(typeof ts==='number'?ts:ts); return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+function modelClass(m) { const l=(m||'').toLowerCase(); if(l.includes('opus')) return 'opus'; if(l.includes('sonnet')) return 'sonnet'; if(l.includes('haiku')) return 'haiku'; return ''; }
+
+document.getElementById('sessionTitle').textContent = sess.project;
+document.getElementById('sessionMeta').innerHTML =
+  '<span>Session: <code>'+sess.session_id.slice(0,8)+'</code></span>' +
+  '<span>'+new Date(sess.start).toLocaleDateString()+' '+new Date(sess.start).toLocaleTimeString()+'</span>' +
+  '<span class="model-badge '+modelClass(sess.primary_model)+'">'+escHtml(sess.primary_model)+'</span>';
+
+const toolCount = Object.values(sess.tools||{}).reduce((s,v)=>s+v,0);
+document.getElementById('statsBar').innerHTML =
+  '<div class="stat-card"><div class="label">Duration</div><div class="value">'+sess.duration_min+'m</div></div>' +
+  '<div class="stat-card"><div class="label">Messages</div><div class="value" style="color:var(--green)">'+sess.messages+'</div></div>' +
+  '<div class="stat-card"><div class="label">Tool Calls</div><div class="value" style="color:var(--cyan)">'+toolCount+'</div></div>' +
+  '<div class="stat-card"><div class="label">Tokens</div><div class="value" style="color:var(--purple)">'+fmtTokens(sess.input_tokens+sess.output_tokens)+'</div></div>' +
+  '<div class="stat-card"><div class="label">Est. Cost</div><div class="value" style="color:var(--orange)">'+fmtUSD(sess.cost)+'</div></div>' +
+  '<div class="stat-card"><div class="label">Compactions</div><div class="value" style="color:'+((sess.compactions||0)>0?'var(--amber)':'var(--text2)')+'">'+((sess.compactions||0))+'</div></div>';
+
+// Simple markdown rendering
+function renderMd(text) {
+  if (!text) return '';
+  let h = escHtml(text);
+  h = h.replace(/```(\\w*)\\n([\\s\\S]*?)```/g, function(m,lang,code) { return '<pre><code class="language-'+lang+'">'+code+'</code></pre>'; });
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+  return h;
+}
+
+// Chat panel
+const chatEl = document.getElementById('chatPanel');
+let chatHtml = '';
+msgs.forEach((m,i) => {
+  if (m.role==='hook') {
+    chatHtml += '<div class="marker hook"><span>&#9881;</span> Hook: '+escHtml(m.hook_name)+' <span style="margin-left:auto">'+fmtTime(m.timestamp)+'</span></div>';
+  } else if (m.role==='compaction') {
+    chatHtml += '<div class="marker compaction"><span>&#9889;</span> Context Compaction <span style="margin-left:auto">'+fmtTime(m.timestamp)+'</span></div>';
+  } else {
+    const isLong = (m.content||'').length > 2000;
+    const display = isLong ? m.content.slice(0,2000) : m.content;
+    chatHtml += '<div class="msg '+m.role+'">' +
+      '<div class="msg-header">' +
+        '<div class="msg-role '+m.role+'">'+(m.role==='user'?'U':'A')+'</div>' +
+        '<span class="msg-time">'+fmtTime(m.timestamp)+'</span>' +
+        (m.model ? '<span class="msg-model"><span class="model-badge '+modelClass(m.model)+'">'+escHtml(m.model)+'</span></span>' : '') +
+        (m.tokens ? '<span class="msg-tokens">'+fmtTokens(m.tokens.input)+'in / '+fmtTokens(m.tokens.output)+'out</span>' : '') +
+      '</div>' +
+      '<div class="msg-content" id="mc'+i+'">'+renderMd(display)+'</div>' +
+      (isLong ? '<div class="msg-expand" data-idx="'+i+'">Show full message ('+(m.content.length/1000).toFixed(1)+'K chars)</div>' : '') +
+      (m.tools && m.tools.length>0 ? '<div class="msg-tools">'+m.tools.map(t =>
+        '<span class="tool-badge">'+escHtml(t.name)+(t.detail ? ' '+escHtml(t.detail) : '')+'</span>'
+      ).join('')+'</div>' : '') +
+    '</div>';
+  }
+});
+chatEl.innerHTML = chatHtml;
+
+// Expand handlers
+document.querySelectorAll('.msg-expand').forEach(el => {
+  el.addEventListener('click', function() {
+    const idx = parseInt(this.getAttribute('data-idx'));
+    document.getElementById('mc'+idx).innerHTML = renderMd(msgs[idx].content);
+    this.remove();
+  });
+});
+
+// Syntax highlighting
+document.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+
+// Role filter
+let activeFilter = 'all';
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    activeFilter = this.getAttribute('data-filter');
+    document.querySelectorAll('#chatPanel > .msg, #chatPanel > .marker').forEach(el => {
+      if (activeFilter === 'all') { el.style.display = ''; return; }
+      if (el.classList.contains('marker')) { el.style.display = 'none'; return; }
+      el.style.display = el.classList.contains(activeFilter) ? '' : 'none';
+    });
+  });
+});
+
+// Copy to clipboard
+document.getElementById('copyBtn').addEventListener('click', function() {
+  const btn = this;
+  const lines = [];
+  document.querySelectorAll('#chatPanel > .msg, #chatPanel > .marker').forEach(el => {
+    if (el.style.display === 'none') return;
+    if (el.classList.contains('marker')) {
+      lines.push('[' + el.textContent.trim() + ']');
+    } else {
+      const role = el.classList.contains('user') ? 'User' : 'Assistant';
+      const content = el.querySelector('.msg-content');
+      lines.push('--- ' + role + ' ---');
+      lines.push(content ? content.textContent.trim() : '');
+    }
+    lines.push('');
+  });
+  navigator.clipboard.writeText(lines.join('\\n')).then(() => {
+    btn.innerHTML = '&#10003; Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.innerHTML = '&#128203; Copy'; btn.classList.remove('copied'); }, 2000);
+  });
+});
+
+// Sidebar
+const sideEl = document.getElementById('sidebar');
+let sideHtml = '';
+sideHtml += '<div class="sidebar-card"><h4>Token Breakdown</h4>' +
+  '<div class="sidebar-row"><span class="label">Input Tokens</span><span class="val">'+fmtTokens(sess.input_tokens)+'</span></div>' +
+  '<div class="sidebar-row"><span class="label">Output Tokens</span><span class="val">'+fmtTokens(sess.output_tokens)+'</span></div>' +
+  '<div class="sidebar-row"><span class="label">Cache Read</span><span class="val">'+fmtTokens(sess.cache_read_tokens)+'</span></div>' +
+  '<div class="sidebar-row"><span class="label">Cache Write</span><span class="val">'+fmtTokens(sess.cache_write_tokens)+'</span></div>' +
+  '</div>';
+const tools = Object.entries(sess.tools||{}).sort((a,b)=>b[1]-a[1]);
+if (tools.length>0) {
+  sideHtml += '<div class="sidebar-card"><h4>Tools Used</h4>' +
+    tools.slice(0,15).map(([n,c]) => '<div class="sidebar-row"><span class="label">'+escHtml(n)+'</span><span class="val">'+c+'x</span></div>').join('') +
+    '</div>';
+}
+const skills = Object.entries(sess.skills||{}).sort((a,b)=>b[1]-a[1]);
+if (skills.length>0) {
+  sideHtml += '<div class="sidebar-card"><h4>Skills Used</h4>' +
+    skills.map(([n,c]) => '<span class="sidebar-tag" style="color:var(--purple)">'+escHtml(n)+' '+c+'x</span>').join('') +
+    '</div>';
+}
+const hooks = Object.entries(sess.hooks||{}).sort((a,b)=>b[1]-a[1]);
+if (hooks.length>0) {
+  sideHtml += '<div class="sidebar-card"><h4>Hooks Fired</h4>' +
+    hooks.map(([n,c]) => '<div class="sidebar-row"><span class="label" style="color:var(--amber)">'+escHtml(n)+'</span><span class="val">'+c+'x</span></div>').join('') +
+    '</div>';
+}
+if (sess.compaction_events && sess.compaction_events.length>0) {
+  sideHtml += '<div class="sidebar-card" style="border-color:rgba(245,158,11,0.3)"><h4 style="color:var(--amber)">Compaction Timeline</h4>' +
+    '<div class="compaction-timeline">' +
+    sess.compaction_events.map(e => '<div class="compaction-event">'+fmtTime(e.timestamp)+'</div>').join('') +
+    '</div></div>';
+}
+const models = Object.entries(sess.model_breakdown||{});
+if (models.length>0) {
+  sideHtml += '<div class="sidebar-card"><h4>Model Breakdown</h4>' +
+    models.map(([m,d]) => '<div class="sidebar-row"><span class="label"><span class="model-badge '+modelClass(m)+'">'+escHtml(m)+'</span></span><span class="val">'+fmtUSD(d.cost)+' ('+d.calls+' calls)</span></div>').join('') +
+    '</div>';
+}
+sideHtml += '<div class="sidebar-card"><h4>Metadata</h4>' +
+  '<div class="sidebar-row"><span class="label">Session ID</span><span class="val" style="font-size:11px;font-family:monospace">'+sess.session_id.slice(0,12)+'...</span></div>' +
+  '<div class="sidebar-row"><span class="label">File Size</span><span class="val">'+sess.file_size_mb+' MB</span></div>' +
+  '</div>';
+sideEl.innerHTML = sideHtml;
+</script>
+</body>
+</html>'''
+
+
+def generate_project_pages(session_list):
+    """Generate individual HTML pages for each project."""
+    projects_dir = OUTPUT_DIR / "projects"
+    projects_dir.mkdir(exist_ok=True)
+
+    # Group sessions by project
+    project_sessions = defaultdict(list)
+    for s in session_list:
+        project_sessions[s["project"]].append(s)
+
+    count = 0
+    slug_map = {}
+    for proj_name, proj_sessions in project_sessions.items():
+        proj_sessions.sort(key=lambda s: s["start"], reverse=True)
+
+        total_cost = sum(s["cost"] for s in proj_sessions)
+        total_messages = sum(s["messages"] for s in proj_sessions)
+        total_tokens = sum(s["input_tokens"] + s["output_tokens"] for s in proj_sessions)
+
+        proj_tools = defaultdict(int)
+        proj_skills = defaultdict(int)
+        for s in proj_sessions:
+            for t, c in s.get("tools", {}).items():
+                proj_tools[t] += c
+            for sk, c in s.get("skills", {}).items():
+                proj_skills[sk] += c
+
+        slug = re.sub(r'[^a-zA-Z0-9_-]', '_', proj_name.replace('/', '_'))
+        slug_map[proj_name] = slug
+
+        project_json = json.dumps({
+            "name": proj_name,
+            "sessions": proj_sessions,
+            "stats": {
+                "total_sessions": len(proj_sessions),
+                "total_messages": total_messages,
+                "total_cost": round(total_cost, 2),
+                "total_tokens": total_tokens,
+            },
+            "tools": dict(sorted(proj_tools.items(), key=lambda x: -x[1])),
+            "skills": dict(sorted(proj_skills.items(), key=lambda x: -x[1])),
+        }, ensure_ascii=False)
+
+        html = _get_project_html_template()
+        html = html.replace('"__PROJECT_DATA__"', project_json)
+        html = html.replace('__VERSION__', VERSION)
+
+        out_path = projects_dir / f"{slug}.html"
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        count += 1
+
+    print(f"  Generated {count} project pages in {projects_dir}")
+    return slug_map
+
+
+def _get_project_html_template():
+    return '''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project Detail</title>
+<style>
+:root { --bg:#0f1117; --bg2:#1a1d27; --bg3:#242836; --border:#2d3348; --text:#e2e8f0; --text2:#94a3b8; --accent:#6366f1; --accent2:#818cf8; --green:#22c55e; --orange:#f59e0b; --blue:#3b82f6; --purple:#a855f7; --cyan:#06b6d4; --amber:#f59e0b; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,-apple-system,sans-serif; font-size:14px; }
+a { color:var(--accent2); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.header { background:var(--bg2); border-bottom:1px solid var(--border); padding:16px 24px; }
+.header-top { display:flex; align-items:center; gap:16px; margin-bottom:4px; }
+.header h1 { font-size:20px; font-weight:600; }
+.container { max-width:1400px; margin:0 auto; padding:20px; }
+.kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:24px; }
+.kpi-card { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:20px; text-align:center; }
+.kpi-card .label { color:var(--text2); font-size:12px; text-transform:uppercase; margin-bottom:8px; }
+.kpi-card .value { font-size:28px; font-weight:700; }
+.tools-section { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:24px; }
+.tools-section h3 { font-size:15px; font-weight:600; margin-bottom:12px; }
+.tool-pills { display:flex; flex-wrap:wrap; gap:8px; }
+.tool-pill { background:var(--bg3); padding:4px 12px; border-radius:16px; font-size:12px; display:flex; align-items:center; gap:6px; }
+.tool-pill .count { color:var(--cyan); font-weight:600; }
+.session-card { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:12px; transition:border-color .2s; }
+.session-card:hover { border-color:var(--accent); }
+.session-card .top { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.session-card .cost { color:var(--orange); font-weight:700; font-size:16px; }
+.session-card .info { display:flex; gap:16px; color:var(--text2); font-size:12px; flex-wrap:wrap; }
+.model-badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+.model-badge.opus { background:rgba(168,85,247,0.2); color:var(--purple); }
+.model-badge.sonnet { background:rgba(59,130,246,0.2); color:var(--blue); }
+.model-badge.haiku { background:rgba(34,197,94,0.2); color:var(--green); }
+@media (max-width:900px) { .kpi-grid { grid-template-columns:repeat(2,1fr); } }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-top"><a href="../index.html">&larr; Back to Dashboard</a></div>
+  <h1 id="projectTitle"></h1>
+</div>
+<div class="container">
+  <div class="kpi-grid" id="kpiGrid"></div>
+  <div class="tools-section" id="toolsSection"><h3>Top Tools</h3><div class="tool-pills" id="toolPills"></div></div>
+  <div id="skillsSection"></div>
+  <h3 style="margin-bottom:16px;font-size:15px">Sessions</h3>
+  <div id="sessionList"></div>
+</div>
+<script>
+const P = "__PROJECT_DATA__";
+const fmt = n => n.toLocaleString();
+const fmtUSD = n => '$'+n.toFixed(2);
+const fmtTokens = n => { if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'K'; return n.toString(); };
+function escHtml(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function modelClass(m) { const l=(m||'').toLowerCase(); if(l.includes('opus')) return 'opus'; if(l.includes('sonnet')) return 'sonnet'; if(l.includes('haiku')) return 'haiku'; return ''; }
+
+document.getElementById('projectTitle').textContent = P.name;
+document.getElementById('kpiGrid').innerHTML =
+  '<div class="kpi-card"><div class="label">Sessions</div><div class="value" style="color:var(--blue)">'+P.stats.total_sessions+'</div></div>' +
+  '<div class="kpi-card"><div class="label">Messages</div><div class="value" style="color:var(--green)">'+fmt(P.stats.total_messages)+'</div></div>' +
+  '<div class="kpi-card"><div class="label">Tokens</div><div class="value" style="color:var(--purple)">'+fmtTokens(P.stats.total_tokens)+'</div></div>' +
+  '<div class="kpi-card"><div class="label">Est. Cost</div><div class="value" style="color:var(--orange)">'+fmtUSD(P.stats.total_cost)+'</div></div>';
+
+document.getElementById('toolPills').innerHTML = Object.entries(P.tools).slice(0,20).map(([n,c]) =>
+  '<div class="tool-pill"><span>'+escHtml(n)+'</span><span class="count">'+c+'x</span></div>'
+).join('');
+
+if (Object.keys(P.skills).length>0) {
+  document.getElementById('skillsSection').innerHTML =
+    '<div class="tools-section"><h3>Skills</h3><div class="tool-pills">' +
+    Object.entries(P.skills).map(([n,c]) =>
+      '<div class="tool-pill" style="border:1px solid rgba(168,85,247,0.3)"><span style="color:var(--purple)">'+escHtml(n)+'</span><span class="count" style="color:var(--purple)">'+c+'x</span></div>'
+    ).join('') + '</div></div>';
+}
+
+document.getElementById('sessionList').innerHTML = P.sessions.map(s =>
+  '<div class="session-card">' +
+    '<div class="top">' +
+      '<div>' +
+        '<span style="color:var(--text2);font-size:12px">'+new Date(s.start).toLocaleDateString()+' '+new Date(s.start).toLocaleTimeString()+'</span>' +
+        '<span class="model-badge '+modelClass(s.primary_model)+'" style="margin-left:8px">'+escHtml(s.primary_model)+'</span>' +
+        ((s.compactions||0)>0 ? '<span style="color:var(--amber);font-size:12px;margin-left:8px">&#9889; '+s.compactions+'</span>' : '') +
+      '</div>' +
+      '<div style="display:flex;gap:12px;align-items:center">' +
+        '<a href="../sessions/'+s.session_id+'.html" style="font-size:12px;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">Chat</a>' +
+        '<span class="cost">'+fmtUSD(s.cost)+'</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="info">' +
+      '<span>'+s.duration_min+'m</span>' +
+      '<span>'+s.messages+' msgs</span>' +
+      '<span>'+fmtTokens(s.input_tokens+s.output_tokens)+' tokens</span>' +
+      '<span>'+s.api_calls+' API calls</span>' +
+    '</div>' +
+  '</div>'
+).join('');
+</script>
 </body>
 </html>'''
 
@@ -2383,6 +3226,15 @@ def main():
     print(f"\nGenerating {DASHBOARD_HTML}...")
     generate_dashboard(data)
     print(f"  Size: {DASHBOARD_HTML.stat().st_size / 1024:.1f} KB")
+
+    print(f"\nGenerating session pages...")
+    generate_session_pages(sessions, data["sessions"])
+
+    print(f"\nGenerating project pages...")
+    project_slugs = generate_project_pages(data["sessions"])
+    data["project_slugs"] = project_slugs
+    # Re-generate dashboard with project slug mapping
+    generate_dashboard(data)
 
     elapsed = time.time() - t0
     print(f"\n{'=' * 50}")
