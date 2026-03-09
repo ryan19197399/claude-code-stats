@@ -73,7 +73,7 @@ else:
     MIGRATION_STATS_CACHE = None
     MIGRATION_HISTORY_JSONL = None
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 OUTPUT_DIR = Path(__file__).parent / "public"
 DASHBOARD_DATA = OUTPUT_DIR / "dashboard_data.json"
@@ -1510,7 +1510,7 @@ def build_dashboard_data(sessions, stats_cache, dot_claude, history,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "locale": LOCALE,
         "account": {
-            "name": account.get("displayName", ""),
+            "name": CONFIG.get("display_name") or account.get("displayName", ""),
             "email": account.get("emailAddress", ""),
         },
         "kpi": {
@@ -2242,8 +2242,9 @@ function renderToolUsageChart() {
 // ── KPI Cards ──────────────────────────────────────────────────────────
 function renderKPI() {
   const k = F.kpi;
+  const dispName = anonMode ? 'Anonymous' : D.account.name;
   document.getElementById('headerMeta').textContent =
-    D.account.name + ' | ' + k.first_session + ' \u2013 ' + k.last_session +
+    dispName + ' | ' + k.first_session + ' \u2013 ' + k.last_session +
     ' | ' + D.locale.header.generated + ': ' + new Date(D.generated_at).toLocaleString(D.locale.locale_code);
 
   const grid = document.getElementById('kpiGrid');
@@ -2485,7 +2486,7 @@ function renderProjects() {
   const top = F.projects.slice(0, 15);
   charts.projectCost = new Chart(document.getElementById('chartProjectCost'), {
     type: 'bar',
-    data: { labels: top.map(p => p.name.split('/').pop()),
+    data: { labels: top.map(p => anonMode ? anonName(p.name) : p.name.split('/').pop()),
       datasets: [{ label: D.locale.projects.top15_label, data: top.map(p => p.cost), backgroundColor: '#6366f1', borderRadius: 4 }] },
     options: { responsive: true, maintainAspectRatio: false, indexAxis: 'y',
       plugins: { legend: { display: false } },
@@ -2506,7 +2507,8 @@ function renderProjectTable(sortKey, sortDir) {
   sorted.forEach(p => {
     const tr = document.createElement('tr');
     const slug = D.project_slugs && D.project_slugs[p.name];
-    const nameCell = slug ? '<a href="projects/'+slug+'.html">'+escHtml(p.name)+'</a>' : escHtml(p.name);
+    const dispPName = anonMode ? anonName(p.name) : p.name;
+    const nameCell = (!anonMode && slug) ? '<a href="projects/'+slug+'.html">'+escHtml(dispPName)+'</a>' : escHtml(dispPName);
     const cells = [
       {html: nameCell, cls: ''},
       {val: p.sessions, cls: 'num'},
@@ -2558,7 +2560,7 @@ function renderSessions() {
   const projects = [...new Set(F.sessions.map(s => s.project))].sort();
   projects.forEach(p => {
     const o = document.createElement('option');
-    o.value = p; o.textContent = p;
+    o.value = p; o.textContent = anonMode ? anonName(p) : p;
     sel.appendChild(o);
   });
   // Restore selection if still valid
@@ -2577,13 +2579,16 @@ function buildSessionCard(s) {
 
   // Top row
   const top = document.createElement('div'); top.className = 'top';
-  const projSpan = document.createElement('span'); projSpan.className = 'project'; projSpan.textContent = s.project;
+  const projSpan = document.createElement('span'); projSpan.className = 'project'; projSpan.textContent = anonMode ? anonName(s.project) : s.project;
   const costSpan = document.createElement('span'); costSpan.className = 'cost'; costSpan.textContent = fmtUSD(s.cost);
   const rightGroup = document.createElement('span'); rightGroup.style.display = 'flex'; rightGroup.style.alignItems = 'center';
-  const chatLink = document.createElement('a'); chatLink.href = 'sessions/' + s.session_id + '.html';
-  chatLink.textContent = 'Chat'; chatLink.addEventListener('click', function(e) { e.stopPropagation(); });
-  chatLink.style.cssText = 'color:var(--accent2);font-size:12px;padding:4px 10px;border:1px solid var(--accent);border-radius:6px;margin-right:8px;text-decoration:none';
-  rightGroup.appendChild(chatLink); rightGroup.appendChild(costSpan);
+  if (!anonMode) {
+    const chatLink = document.createElement('a'); chatLink.href = 'sessions/' + s.session_id + '.html';
+    chatLink.textContent = 'Chat'; chatLink.addEventListener('click', function(e) { e.stopPropagation(); });
+    chatLink.style.cssText = 'color:var(--accent2);font-size:12px;padding:4px 10px;border:1px solid var(--accent);border-radius:6px;margin-right:8px;text-decoration:none';
+    rightGroup.appendChild(chatLink);
+  }
+  rightGroup.appendChild(costSpan);
   top.appendChild(projSpan); top.appendChild(rightGroup);
   card.appendChild(top);
 
@@ -2606,7 +2611,7 @@ function buildSessionCard(s) {
   card.appendChild(info);
 
   // Prompt
-  if (s.first_prompt) {
+  if (s.first_prompt && !anonMode) {
     const prompt = document.createElement('div'); prompt.className = 'prompt';
     prompt.textContent = s.first_prompt;
     card.appendChild(prompt);
@@ -3197,8 +3202,44 @@ renderSessions();
 renderPlan();
 renderInsights();
 renderAgentsTab();
+
+// F2 Anonymization mode
+let anonMode = false;
+const anonMap = {};
+let anonCounter = 0;
+function anonName(name) {
+  if (!anonMap[name]) { anonCounter++; anonMap[name] = 'Project ' + anonCounter; }
+  return anonMap[name];
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'F2') {
+    e.preventDefault();
+    anonMode = !anonMode;
+    // Toggle CSS class on body
+    document.body.classList.toggle('anon-mode', anonMode);
+    // Re-render affected sections
+    renderKPI();
+    renderProjects();
+    renderSessions();
+    renderPlan();
+    // Show/hide notification
+    let note = document.getElementById('anonNote');
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'anonNote';
+      note.style.cssText = 'position:fixed;top:12px;right:12px;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;z-index:9999;transition:opacity 0.3s;';
+      document.body.appendChild(note);
+    }
+    note.style.background = anonMode ? 'var(--green)' : 'var(--red)';
+    note.style.color = 'white';
+    note.textContent = anonMode ? 'Anonymization ON' : 'Anonymization OFF';
+    note.style.opacity = '1';
+    setTimeout(() => { note.style.opacity = '0'; }, 2000);
+  }
+});
 </script>
-<div style="text-align:center;padding:24px 0 12px;color:#475569;font-size:11px;">v__VERSION__</div>
+<div style="text-align:center;padding:24px 0 8px;color:#475569;font-size:11px;">v__VERSION__</div>
+<div style="text-align:center;padding:0 0 16px;color:#64748b;font-size:10px;">Contains private data &mdash; do not share publicly | Press F2 to toggle anonymization</div>
 </body>
 </html>'''
 
