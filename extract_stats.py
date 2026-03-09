@@ -1772,6 +1772,8 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
 .heatmap-months { display:flex; font-size:10px; color:var(--text2); margin-bottom:2px; }
 .heatmap-months span { text-align:center; }
 
+.tag { display:inline-block; padding:3px 10px; border-radius:6px; font-size:12px; font-weight:600; }
+
 @media (max-width:900px) {
   .chart-grid { grid-template-columns:1fr; }
   .kpi-grid { grid-template-columns:repeat(2,1fr); }
@@ -1960,6 +1962,26 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
         <div id="hooksList"></div>
       </div>
     </div>
+    <div class="chart-grid">
+      <div class="chart-box"><h3>__L_insights_system_info__</h3><div id="systemInfo"></div></div>
+      <div class="chart-box"><h3>__L_insights_git_ops__</h3><div id="gitOpsInfo"></div></div>
+    </div>
+    <div class="chart-grid">
+      <div class="chart-box"><h3>__L_insights_memory_per_session__</h3><canvas id="memoryChart" height="200"></canvas></div>
+      <div class="chart-box"><h3>__L_insights_error_rate_over_time__</h3><canvas id="errorRateChart" height="200"></canvas></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-agents">
+    <div class="chart-grid">
+      <div class="chart-box"><h3>__L_agents_subagent_types__</h3><canvas id="agentTypesChart" height="250"></canvas></div>
+      <div class="chart-box"><h3>__L_agents_top_descriptions__</h3><canvas id="agentDescsChart" height="250"></canvas></div>
+    </div>
+    <div class="kpi-grid" id="agentKpis"></div>
+    <div class="chart-grid">
+      <div class="chart-box"><h3>__L_agents_task_overview__</h3><div id="taskOverview"></div></div>
+      <div class="chart-box"><h3>__L_agents_error_overview__</h3><div id="errorOverview"></div></div>
+    </div>
   </div>
 </div>
 
@@ -2129,6 +2151,39 @@ function filterData(days, projectFilter) {
     first_session: dates.length > 0 ? dates[0] : D.kpi.first_session,
     last_session: dates.length > 0 ? dates[dates.length - 1] : D.kpi.last_session,
   };
+
+  // Recalculate agent_summary from filtered sessions
+  const agentTypeMap = {};
+  const agentDescMap = {};
+  let totalDispatches = 0;
+  F.sessions.forEach(s => {
+    (s.agent_dispatches || []).forEach(ad => {
+      totalDispatches++;
+      const t = ad.type || 'unknown';
+      agentTypeMap[t] = (agentTypeMap[t] || 0) + 1;
+      const d = ad.description || ad.desc || '';
+      if (d) agentDescMap[d] = (agentDescMap[d] || 0) + 1;
+    });
+    (s.subagents || []).forEach(sa => {
+      totalDispatches++;
+      const t = sa.type || 'unknown';
+      agentTypeMap[t] = (agentTypeMap[t] || 0) + 1;
+    });
+  });
+  F.agent_summary = {
+    total_dispatches: totalDispatches,
+    type_distribution: Object.entries(agentTypeMap).map(([type, count]) => ({type, count})).sort((a,b) => b.count - a.count),
+    top_descriptions: Object.entries(agentDescMap).map(([desc, count]) => ({desc, count})).sort((a,b) => b.count - a.count).slice(0, 10),
+  };
+
+  // Recalculate error_summary from filtered sessions
+  const fErrors = F.sessions.reduce((s, x) => s + (x.error_count || 0), 0);
+  const fToolCalls = F.sessions.reduce((s, x) => s + (x.api_calls || 0), 0);
+  F.error_summary = {
+    total_errors: fErrors,
+    total_tool_calls: fToolCalls,
+    error_rate: fToolCalls > 0 ? +(fErrors / fToolCalls * 100).toFixed(2) : 0,
+  };
 }
 
 function initTimeFilter() {
@@ -2165,6 +2220,7 @@ function applyFilter(days, projectFilter) {
   renderProjects();
   renderSessions();
   renderToolUsageChart();
+  renderAgentsTab();
 }
 
 function renderToolUsageChart() {
@@ -2216,6 +2272,7 @@ const TAB_NAMES = [
   {id:'sessions', label:D.locale.tabs.sessions},
   {id:'plan', label:D.locale.tabs.plan},
   {id:'insights', label:D.locale.tabs.insights},
+  {id:'agents', label:D.locale.tabs.agents},
 ];
 
 function initTabs() {
@@ -2963,6 +3020,146 @@ function renderInsights() {
   } else if (hooksEl) {
     hooksEl.innerHTML = '<p style="color:var(--text2);font-size:13px;padding:12px">No hooks fired yet</p>';
   }
+
+  // System info
+  const envInfo = D.insights?.telemetry?.env_info || {};
+  const sysEl = document.getElementById('systemInfo');
+  if (sysEl) {
+    sysEl.innerHTML =
+      '<div class="sidebar-row"><span class="label">Platform</span><span class="val">'+(envInfo.platform||'\\u2014')+'</span></div>' +
+      '<div class="sidebar-row"><span class="label">Node</span><span class="val">'+(envInfo.node_version||'\\u2014')+'</span></div>' +
+      '<div class="sidebar-row"><span class="label">Claude Code</span><span class="val">'+(envInfo.claude_version||'\\u2014')+'</span></div>' +
+      '<div class="sidebar-row"><span class="label">Terminal</span><span class="val">'+(envInfo.terminal||'\\u2014')+'</span></div>' +
+      '<div class="sidebar-row"><span class="label">Arch</span><span class="val">'+(envInfo.arch||'\\u2014')+'</span></div>';
+  }
+
+  // Git ops
+  const gs = D.git_summary || {};
+  const gitEl = document.getElementById('gitOpsInfo');
+  if (gitEl) {
+    gitEl.innerHTML =
+      '<div class="sidebar-row"><span class="label">__L_insights_commits__</span><span class="val" style="color:var(--green)">'+(gs.commits||0)+'</span></div>' +
+      '<div class="sidebar-row"><span class="label">__L_insights_pushes__</span><span class="val" style="color:var(--blue)">'+(gs.pushes||0)+'</span></div>' +
+      '<div class="sidebar-row"><span class="label">__L_insights_pull_requests__</span><span class="val" style="color:var(--purple)">'+(gs.prs||0)+'</span></div>';
+  }
+
+  // Memory per session chart
+  const telSessions = D.insights?.telemetry?.per_session || {};
+  const memData = D.sessions.filter(s => telSessions[s.session_id]).map(s => ({
+    date: s.date, rss: telSessions[s.session_id].peak_rss_mb
+  }));
+  if (memData.length > 0) {
+    new Chart(document.getElementById('memoryChart'), {
+      type: 'bar',
+      data: {
+        labels: memData.map(d => d.date),
+        datasets: [{ label: 'Peak RSS (MB)', data: memData.map(d => d.rss), backgroundColor: 'rgba(168,85,247,0.6)', borderRadius:3 }]
+      },
+      options: { responsive:true, plugins:{legend:{labels:{color:'#e2e8f0'}}}, scales:{ x:{ticks:{color:'#94a3b8',maxTicksLimit:15}}, y:{ticks:{color:'#94a3b8'}} } }
+    });
+  }
+
+  // Error rate over time chart
+  const dailyErrors = {};
+  D.sessions.forEach(s => {
+    if (!dailyErrors[s.date]) dailyErrors[s.date] = {errors:0, calls:0};
+    dailyErrors[s.date].errors += s.error_count || 0;
+    dailyErrors[s.date].calls += s.api_calls || 0;
+  });
+  const errDates = Object.keys(dailyErrors).sort();
+  const errRates = errDates.map(d => dailyErrors[d].calls > 0 ? +(dailyErrors[d].errors / dailyErrors[d].calls * 100).toFixed(1) : 0);
+  if (errDates.length > 0) {
+    new Chart(document.getElementById('errorRateChart'), {
+      type: 'line',
+      data: {
+        labels: errDates,
+        datasets: [{ label: 'Error Rate (%)', data: errRates, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', fill:true, tension:0.3 }]
+      },
+      options: { responsive:true, plugins:{legend:{labels:{color:'#e2e8f0'}}}, scales:{ x:{ticks:{color:'#94a3b8',maxTicksLimit:15}}, y:{ticks:{color:'#94a3b8'}, beginAtZero:true} } }
+    });
+  }
+}
+
+// ── Tab 7: Agents ──────────────────────────────────────────────────────
+let agentTypesChartInstance, agentDescsChartInstance;
+const chartColors = ['#6366f1','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#ec4899','#3b82f6','#f97316','#14b8a6'];
+
+function renderAgentsTab() {
+  const as = F.agent_summary || D.agent_summary || {};
+  const es = F.error_summary || D.error_summary || {};
+
+  // Subagent types donut
+  const atd = as.type_distribution || [];
+  if (agentTypesChartInstance) agentTypesChartInstance.destroy();
+  if (atd.length > 0) {
+    agentTypesChartInstance = new Chart(document.getElementById('agentTypesChart'), {
+      type: 'doughnut',
+      data: {
+        labels: atd.map(d => d.type),
+        datasets: [{ data: atd.map(d => d.count), backgroundColor: chartColors }]
+      },
+      options: { responsive:true, plugins:{ legend:{ position:'right', labels:{color:'#e2e8f0',font:{size:11}} } } }
+    });
+  }
+
+  // Top descriptions bar
+  const tds = as.top_descriptions || [];
+  if (agentDescsChartInstance) agentDescsChartInstance.destroy();
+  if (tds.length > 0) {
+    agentDescsChartInstance = new Chart(document.getElementById('agentDescsChart'), {
+      type: 'bar',
+      data: {
+        labels: tds.map(d => d.desc.length > 30 ? d.desc.slice(0,30)+'...' : d.desc),
+        datasets: [{ data: tds.map(d => d.count), backgroundColor: 'rgba(99,102,241,0.7)', borderRadius:4 }]
+      },
+      options: { indexAxis:'y', responsive:true, plugins:{legend:{display:false}}, scales:{ x:{ticks:{color:'#94a3b8'}}, y:{ticks:{color:'#94a3b8',font:{size:10}}} } }
+    });
+  }
+
+  // KPI cards
+  const kpiEl = document.getElementById('agentKpis');
+  kpiEl.innerHTML = '';
+  const agentKpis = [
+    {val: as.total_dispatches || 0, color:'var(--purple)', label:'__L_agents_dispatches__'},
+    {val: (F.insights?.tasks?.total || D.insights?.tasks?.total || 0), color:'var(--cyan)', label:'__L_agents_total_tasks__'},
+    {val: (es.error_rate || 0) + '%', color:'var(--red)', label:'__L_agents_error_rate__'},
+  ];
+  agentKpis.forEach(k => {
+    const div = document.createElement('div');
+    div.className = 'kpi-card';
+    div.innerHTML = '<div class="label">'+k.label+'</div><div class="value" style="color:'+k.color+'">'+k.val+'</div>';
+    kpiEl.appendChild(div);
+  });
+
+  // Task overview
+  const taskEl = document.getElementById('taskOverview');
+  const tasks = D.insights?.tasks || {};
+  if (tasks.total > 0) {
+    const pct = Math.round((tasks.completed / tasks.total) * 100);
+    taskEl.innerHTML =
+      '<div style="display:flex;gap:16px;align-items:center;margin-bottom:12px">' +
+        '<div style="width:80px;height:80px;position:relative"><canvas id="taskDonut"></canvas></div>' +
+        '<div><div style="font-size:24px;font-weight:700">'+pct+'%</div><div style="color:var(--text2);font-size:12px">__L_agents_task_completion__</div></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<span class="tag" style="background:rgba(34,197,94,0.15);color:var(--green)">\\u2713 '+tasks.completed+' completed</span>' +
+        '<span class="tag" style="background:rgba(99,102,241,0.15);color:var(--accent2)">\\u25B6 '+(tasks.in_progress||0)+' in progress</span>' +
+        '<span class="tag" style="background:rgba(148,163,184,0.15);color:var(--text2)">\\u25CB '+(tasks.pending||0)+' pending</span>' +
+      '</div>';
+    new Chart(document.getElementById('taskDonut'), {
+      type: 'doughnut',
+      data: { labels:['Completed','Pending','In Progress'], datasets:[{data:[tasks.completed,tasks.pending||0,tasks.in_progress||0], backgroundColor:['#22c55e','#94a3b8','#6366f1']}] },
+      options: { cutout:'70%', responsive:true, plugins:{legend:{display:false}} }
+    });
+  } else {
+    taskEl.innerHTML = '<div style="color:var(--text2)">No tasks found</div>';
+  }
+
+  // Error overview
+  const errEl = document.getElementById('errorOverview');
+  errEl.innerHTML =
+    '<div style="margin-bottom:12px"><span style="font-size:20px;font-weight:700;color:var(--red)">'+(es.total_errors||0)+'</span> errors / <span style="font-weight:600">'+(es.total_tool_calls||0)+'</span> tool calls</div>' +
+    '<div style="font-size:12px;color:var(--text2);margin-bottom:8px">__L_agents_error_rate__: '+(es.error_rate||0)+'%</div>';
 }
 
 // ── Sortable Tables ────────────────────────────────────────────────────
@@ -2999,6 +3196,7 @@ renderProjects();
 renderSessions();
 renderPlan();
 renderInsights();
+renderAgentsTab();
 </script>
 <div style="text-align:center;padding:24px 0 12px;color:#475569;font-size:11px;">v__VERSION__</div>
 </body>
