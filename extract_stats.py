@@ -1747,6 +1747,7 @@ function filterData(days) {
     output: D.cost_by_token_type.output * ratio,
     cache_read: D.cost_by_token_type.cache_read * ratio,
     cache_write: D.cost_by_token_type.cache_write * ratio,
+    cache_savings: (D.cost_by_token_type.cache_savings || 0) * ratio,
   };
 
   // Recalculate projects from filtered sessions
@@ -1995,8 +1996,8 @@ function renderCosts() {
   const ct = F.cost_by_token_type;
   const cacheKpi = document.getElementById('cacheKpi');
   if (cacheKpi && ct) {
-    const cacheRead = F.model_summary.reduce((s,m) => s + m.cache_read_tokens, 0);
-    const cacheWrite = F.model_summary.reduce((s,m) => s + m.cache_write_tokens, 0);
+    const cacheRead = F.sessions.reduce((s,se) => s + (se.cache_read_tokens || 0), 0);
+    const cacheWrite = F.sessions.reduce((s,se) => s + (se.cache_write_tokens || 0), 0);
     cacheKpi.innerHTML = [
       '<div class="kpi-card"><div class="label">Cache Read Tokens</div>',
       '<div class="value" style="color:var(--cyan)">' + fmtTokens(cacheRead) + '</div></div>',
