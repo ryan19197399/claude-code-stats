@@ -3343,7 +3343,7 @@ document.addEventListener('keydown', function(e) {
 });
 </script>
 <div style="text-align:center;padding:24px 0 8px;color:#475569;font-size:11px;">v__VERSION__</div>
-<div style="text-align:center;padding:0 0 16px;color:#64748b;font-size:10px;">Contains private data &mdash; do not share publicly | Press F2 to toggle anonymization</div>
+<div style="text-align:center;padding:0 0 16px;color:#64748b;font-size:10px;">Contains private data &mdash; do not share publicly | Press F2 to toggle anonymization | <a href="https://github.com/AeternaLabsHQ/claude-code-stats" style="color:#818cf8" target="_blank">GitHub</a></div>
 </body>
 </html>'''
 
