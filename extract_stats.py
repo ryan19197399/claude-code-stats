@@ -3493,8 +3493,22 @@ def build_session_flow(messages):
         "cost": 0.0,
         "tools_summary": {}
     }]
+    agents.append({
+        "id": "user",
+        "name": "User",
+        "type": "user",
+        "parent_id": None,
+        "tokens": None,
+        "cost": None,
+        "tools_summary": {}
+    })
     events = []
     edges = []
+    edges.append({
+        "from": "user",
+        "to": "main",
+        "type": "conversation"
+    })
     subagent_counter = 0
 
     # Determine session start time for relative timestamps
@@ -3610,6 +3624,11 @@ def build_session_flow(messages):
                 "t": t,
                 "msg_index": i
             })
+
+    # Count user messages for the user node
+    user_msg_count = sum(1 for e in events if e.get("type") == "message" and e.get("role") == "user")
+    # Update user node with message count (agents[1] is the user node)
+    agents[1]["message_count"] = user_msg_count
 
     events.sort(key=lambda e: e["t"])
 
@@ -4015,6 +4034,12 @@ class SessionFlow {
       this._lastActiveNode = this.nodes[0];
       this.effects.push({type:"spawn", node:this.nodes[0], t:0, dur:1.0});
     }
+    // Show user node immediately alongside main agent
+    var userNode = this.allNodes.find(function(n) { return n.id === 'user'; });
+    if (userNode) {
+      userNode.targetOpacity = 1;
+      this.effects.push({type:'spawn', node:userNode, t:0, dur:1.0});
+    }
     this._fitAll();
     this._bindEvents();
     this._raf();
@@ -4151,13 +4176,18 @@ class SessionFlow {
     const nodeMap = {};
 
     agents.forEach((a, i) => {
+      var isMain = a.type === 'main';
+      var isUser = a.type === 'user';
       const node = {
-        id: a.id, name: a.name, type: a.type === "main" ? "main" : "subagent",
+        id: a.id, name: a.name, type: isUser ? 'user' : (isMain ? 'main' : 'subagent'),
         parentId: a.parent_id, data: a,
-        x: (Math.random() - 0.5) * 200, y: (Math.random() - 0.5) * 200,
-        vx: 0, vy: 0, fx: null, fy: null,
-        r: a.type === "main" ? 50 : 35,
-        color: a.type === "main" ? "#00d4ff" : "#ff00aa",
+        x: isUser ? -250 : (Math.random() - 0.5) * 200,
+        y: isUser ? 0 : (Math.random() - 0.5) * 200,
+        vx: 0, vy: 0,
+        fx: isUser ? -250 : null,
+        fy: isUser ? 0 : null,
+        r: isUser ? 40 : (isMain ? 50 : 35),
+        color: isUser ? '#00ff88' : (isMain ? '#00d4ff' : '#ff00aa'),
         opacity: 0, targetOpacity: 0,
         scanPhase: Math.random() * Math.PI * 2,
         glowPulse: Math.random() * Math.PI * 2
@@ -4191,7 +4221,7 @@ class SessionFlow {
     flowEdges.forEach(e => {
       const from = nodeMap[e.from], to = nodeMap[e.to];
       if (from && to) {
-        this.edges.push({from, to, type: "dispatch", particles: []});
+        this.edges.push({from, to, type: e.type || "dispatch", particles: []});
       }
     });
 
@@ -4300,60 +4330,110 @@ class SessionFlow {
       const r = n.r * this.cam.scale;
       ctx.globalAlpha = n.opacity;
 
-      ctx.save();
-      ctx.shadowColor = n.color;
-      ctx.shadowBlur = 25 * this.cam.scale;
-      this._hexPath(ctx, s.x, s.y, r * 1.05);
-      ctx.fillStyle = n.color + "10";
-      ctx.fill(); ctx.fill();
-      ctx.restore();
-
-      this._hexPath(ctx, s.x, s.y, r);
-      ctx.fillStyle = "#0d0d1a";
-      ctx.fill();
-
-      ctx.save();
-      this._hexPath(ctx, s.x, s.y, r);
-      ctx.clip();
-      const scanY = s.y - r + ((t * 40 + n.scanPhase * 50) % (r * 2));
-      const scanGrad = ctx.createLinearGradient(s.x, scanY - 20, s.x, scanY + 20);
-      scanGrad.addColorStop(0, "transparent");
-      scanGrad.addColorStop(0.5, n.color + "15");
-      scanGrad.addColorStop(1, "transparent");
-      ctx.fillStyle = scanGrad;
-      ctx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
-      ctx.restore();
-
-      this._hexPath(ctx, s.x, s.y, r);
-      ctx.strokeStyle = n.color + "80";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      const pulse = 0.6 + Math.sin(t * 1.5 + n.glowPulse) * 0.4;
-      this._hexPath(ctx, s.x, s.y, r * 0.85);
-      const pulseHex = Math.round(pulse * 40).toString(16).padStart(2,"0");
-      ctx.strokeStyle = n.color + pulseHex;
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      if (r > 15) {
-        ctx.fillStyle = "#fff";
-        ctx.font = "bold " + Math.max(10, r * 0.28) + "px monospace";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        const icon = n.type === "main" ? "✦" : n.data.type.charAt(0).toUpperCase();
-        ctx.fillText(icon, s.x, s.y - 2);
-        ctx.font = Math.max(9, r * 0.22) + "px monospace";
-        ctx.fillStyle = n.color;
-        const nodeName = n.name.length > 18 ? n.name.slice(0,16) + ".." : n.name;
-        ctx.fillText(nodeName, s.x, s.y + r + 14);
-      }
-
-      if (this.selected === n || this.hovered === n) {
-        this._hexPath(ctx, s.x, s.y, r + 4);
-        ctx.strokeStyle = "#ffffff60";
-        ctx.lineWidth = 2;
+      // Draw shape based on type
+      if (n.type === 'user') {
+        // Outer glow
+        ctx.save();
+        ctx.shadowColor = n.color;
+        ctx.shadowBlur = 25 * this.cam.scale;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r * 1.05, 0, Math.PI * 2);
+        ctx.fillStyle = n.color + '10';
+        ctx.fill(); ctx.fill();
+        ctx.restore();
+        // Circle fill
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = '#0d0d1a';
+        ctx.fill();
+        // Circle border
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+        ctx.strokeStyle = n.color + '80';
+        ctx.lineWidth = 1.5;
         ctx.stroke();
+        // Pulsing ring
+        var pulse = 0.6 + Math.sin(t * 1.5 + n.glowPulse) * 0.4;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r * 0.85, 0, Math.PI * 2);
+        var pulseHex = Math.round(pulse * 40).toString(16).padStart(2,'0');
+        ctx.strokeStyle = n.color + pulseHex;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        // User icon
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold ' + Math.max(14, r * 0.4) + 'px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('\u263A', s.x, s.y);
+        // Label
+        ctx.font = Math.max(9, r * 0.25) + 'px monospace';
+        ctx.fillStyle = n.color;
+        ctx.fillText('User', s.x, s.y + r + 14);
+        // Selection highlight
+        if (this.selected === n || this.hovered === n) {
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, r + 4, 0, Math.PI * 2);
+          ctx.strokeStyle = '#ffffff60';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      } else {
+        ctx.save();
+        ctx.shadowColor = n.color;
+        ctx.shadowBlur = 25 * this.cam.scale;
+        this._hexPath(ctx, s.x, s.y, r * 1.05);
+        ctx.fillStyle = n.color + "10";
+        ctx.fill(); ctx.fill();
+        ctx.restore();
+
+        this._hexPath(ctx, s.x, s.y, r);
+        ctx.fillStyle = "#0d0d1a";
+        ctx.fill();
+
+        ctx.save();
+        this._hexPath(ctx, s.x, s.y, r);
+        ctx.clip();
+        const scanY = s.y - r + ((t * 40 + n.scanPhase * 50) % (r * 2));
+        const scanGrad = ctx.createLinearGradient(s.x, scanY - 20, s.x, scanY + 20);
+        scanGrad.addColorStop(0, "transparent");
+        scanGrad.addColorStop(0.5, n.color + "15");
+        scanGrad.addColorStop(1, "transparent");
+        ctx.fillStyle = scanGrad;
+        ctx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
+        ctx.restore();
+
+        this._hexPath(ctx, s.x, s.y, r);
+        ctx.strokeStyle = n.color + "80";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        const pulse = 0.6 + Math.sin(t * 1.5 + n.glowPulse) * 0.4;
+        this._hexPath(ctx, s.x, s.y, r * 0.85);
+        const pulseHex = Math.round(pulse * 40).toString(16).padStart(2,"0");
+        ctx.strokeStyle = n.color + pulseHex;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        if (r > 15) {
+          ctx.fillStyle = "#fff";
+          ctx.font = "bold " + Math.max(10, r * 0.28) + "px monospace";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          const icon = n.type === "main" ? "✦" : n.data.type.charAt(0).toUpperCase();
+          ctx.fillText(icon, s.x, s.y - 2);
+          ctx.font = Math.max(9, r * 0.22) + "px monospace";
+          ctx.fillStyle = n.color;
+          const nodeName = n.name.length > 18 ? n.name.slice(0,16) + ".." : n.name;
+          ctx.fillText(nodeName, s.x, s.y + r + 14);
+        }
+
+        if (this.selected === n || this.hovered === n) {
+          this._hexPath(ctx, s.x, s.y, r + 4);
+          ctx.strokeStyle = "#ffffff60";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
       }
     }
     ctx.globalAlpha = 1;
@@ -4396,11 +4476,12 @@ class SessionFlow {
       const cp1 = {x: sf.x + dx*0.3 + nx*off, y: sf.y + dy*0.3 + ny*off};
       const cp2 = {x: sf.x + dx*0.7 + nx*off, y: sf.y + dy*0.7 + ny*off};
 
+      var edgeColor = e.type === "dispatch" ? "#00d4ff" : (e.type === "conversation" ? "#00ff88" : "#ff8800");
       ctx.globalAlpha = alpha * 0.3;
       ctx.beginPath();
       ctx.moveTo(sf.x, sf.y);
       ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, st.x, st.y);
-      ctx.strokeStyle = e.type === "dispatch" ? "#00d4ff" : "#ff8800";
+      ctx.strokeStyle = edgeColor;
       ctx.lineWidth = e.type === "dispatch" ? 2 : 1.5;
       ctx.stroke();
 
@@ -4410,13 +4491,13 @@ class SessionFlow {
       ctx.beginPath();
       ctx.moveTo(sf.x, sf.y);
       ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, st.x, st.y);
-      ctx.strokeStyle = e.type === "dispatch" ? "#00d4ff" : "#ff8800";
+      ctx.strokeStyle = edgeColor;
       ctx.lineWidth = 4;
       ctx.stroke();
       ctx.restore();
 
       if (e.particles.length === 0) this._initEdgeParticles(e);
-      const sprite = e.type === "dispatch" ? this.sprites.glow : this.sprites.glowOrange;
+      const sprite = e.type === "dispatch" ? this.sprites.glow : (e.type === "conversation" ? this.sprites.glowGreen : this.sprites.glowOrange);
       ctx.globalAlpha = alpha;
       for (const p of e.particles) {
         p.t += p.speed * (this.hovered === fa || this.hovered === ta ? 2.5 : 1);
@@ -4574,11 +4655,24 @@ class SessionFlow {
     switch (evt.type) {
       case "message":
         agent = nodeMap[evt.agent_id];
+        var userNode = nodeMap['user'];
         if (agent) {
           agent.targetOpacity = 1;
           this._lastActiveNode = agent;
-          if (evt.role === "user")
+          if (evt.role === "user") {
+            // Pulse user node green and also pulse the main agent (data flowing from user to agent)
+            if (userNode) {
+              userNode.targetOpacity = 1;
+              this.effects.push({type:"pulse", node:userNode, t:0, dur:0.8, color:"#00ff88"});
+            }
             this.effects.push({type:"pulse", node:agent, t:0, dur:0.8, color:"#00ff88"});
+          } else if (evt.role === "assistant") {
+            // Pulse from agent back toward user (cyan pulse on the user node)
+            if (userNode) {
+              userNode.targetOpacity = 1;
+              this.effects.push({type:"pulse", node:userNode, t:0, dur:0.8, color:"#00d4ff"});
+            }
+          }
         }
         break;
       case "tool_call":
