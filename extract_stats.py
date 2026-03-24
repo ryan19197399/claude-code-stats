@@ -3478,6 +3478,146 @@ document.addEventListener('keydown', function(e) {
 </html>'''
 
 
+def build_session_flow(messages):
+    """Build a flow graph from the flat message list for Canvas visualization."""
+    if not messages:
+        return {"agents": [], "events": [], "edges": []}
+
+    # Main agent is always present
+    agents = [{
+        "id": "main",
+        "name": "Claude",
+        "type": "main",
+        "parent_id": None,
+        "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+        "cost": 0.0,
+        "tools_summary": {}
+    }]
+    events = []
+    edges = []
+    subagent_counter = 0
+
+    # Determine session start time for relative timestamps
+    first_ts = None
+    for m in messages:
+        ts = m.get("timestamp")
+        if ts:
+            if isinstance(ts, str):
+                try:
+                    from datetime import datetime
+                    first_ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000
+                except Exception:
+                    first_ts = 0
+            elif isinstance(ts, (int, float)):
+                first_ts = float(ts)
+            break
+    if first_ts is None:
+        first_ts = 0
+
+    def relative_t(timestamp):
+        """Convert a timestamp to milliseconds relative to session start."""
+        if not timestamp:
+            return 0
+        if isinstance(timestamp, str):
+            try:
+                from datetime import datetime
+                ts_ms = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000
+                return max(0, ts_ms - first_ts)
+            except Exception:
+                return 0
+        elif isinstance(timestamp, (int, float)):
+            return max(0, float(timestamp) - first_ts)
+        return 0
+
+    for i, msg in enumerate(messages):
+        role = msg.get("role", "")
+        t = relative_t(msg.get("timestamp"))
+
+        if role == "user":
+            events.append({
+                "type": "message",
+                "agent_id": "main",
+                "role": "user",
+                "t": t,
+                "msg_index": i
+            })
+
+        elif role == "assistant":
+            tokens = msg.get("tokens", {})
+            agents[0]["tokens"]["input"] += tokens.get("input", 0)
+            agents[0]["tokens"]["output"] += tokens.get("output", 0)
+            agents[0]["tokens"]["cache_read"] += tokens.get("cache_read", 0)
+            agents[0]["tokens"]["cache_write"] += tokens.get("cache_write", 0)
+            agents[0]["cost"] += msg.get("cost", 0.0)
+
+            events.append({
+                "type": "message",
+                "agent_id": "main",
+                "role": "assistant",
+                "t": t,
+                "msg_index": i
+            })
+
+            for tool in msg.get("tools", []):
+                tool_name = tool.get("name", "")
+                agents[0]["tools_summary"][tool_name] = agents[0]["tools_summary"].get(tool_name, 0) + 1
+
+                if tool_name == "Agent":
+                    agent_id = f"subagent-{subagent_counter}"
+                    subagent_counter += 1
+                    agents.append({
+                        "id": agent_id,
+                        "name": tool.get("detail", "Sub-agent")[:80],
+                        "type": tool.get("agent_type", "general-purpose"),
+                        "parent_id": "main",
+                        "tokens": None,
+                        "cost": None,
+                        "tools_summary": {}
+                    })
+                    edges.append({
+                        "from": "main",
+                        "to": agent_id,
+                        "type": "dispatch"
+                    })
+                    events.append({
+                        "type": "agent_spawn",
+                        "agent_id": agent_id,
+                        "parent_id": "main",
+                        "t": t,
+                        "msg_index": i
+                    })
+                else:
+                    events.append({
+                        "type": "tool_call",
+                        "agent_id": "main",
+                        "tool": tool_name,
+                        "detail": tool.get("detail", "")[:120],
+                        "t": t,
+                        "msg_index": i
+                    })
+
+        elif role == "compaction":
+            events.append({
+                "type": "compaction",
+                "agent_id": "main",
+                "t": t,
+                "msg_index": i
+            })
+
+        elif role == "hook":
+            events.append({
+                "type": "hook",
+                "agent_id": "main",
+                "hook_name": msg.get("hook_name", ""),
+                "t": t,
+                "msg_index": i
+            })
+
+    events.sort(key=lambda e: e["t"])
+
+    return {"agents": agents, "events": events, "edges": edges}
+
+
 def generate_session_pages(sessions, session_list):
     """Generate individual HTML pages for each session."""
     sessions_dir = OUTPUT_DIR / "sessions"
@@ -3492,6 +3632,8 @@ def generate_session_pages(sessions, session_list):
         if not messages:
             continue
 
+        flow_data = build_session_flow(messages)
+
         session_json = json.dumps({
             "session": sess_data,
             "messages": messages,
@@ -3499,6 +3641,8 @@ def generate_session_pages(sessions, session_list):
 
         html = _get_session_html_template()
         html = html.replace('"__SESSION_DATA__"', session_json)
+        flow_json = json.dumps(flow_data, ensure_ascii=False, separators=(',', ':'))
+        html = html.replace('"__FLOW_DATA__"', flow_json)
         html = html.replace('__VERSION__', VERSION)
 
         out_path = sessions_dir / f"{sid}.html"
@@ -3614,6 +3758,7 @@ a:hover { text-decoration:underline; }
 </div>
 <script>
 const S = "__SESSION_DATA__";
+const FLOW = "__FLOW_DATA__";
 const sess = S.session;
 const msgs = S.messages;
 const fmt = n => n.toLocaleString();
