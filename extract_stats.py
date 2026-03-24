@@ -4011,8 +4011,11 @@ class SessionFlow {
     if (!this.flow.events || this.flow.events.length === 0) {
       this.allNodes.forEach(n => { n.opacity = 1; n.targetOpacity = 1; });
       this.playDone = true;
-    } else {
-      this.allNodes.forEach(n => { n.targetOpacity = 1; });
+    }
+    if (this.nodes.length > 0) {
+      this.nodes[0].targetOpacity = 1;
+      this._lastActiveNode = this.nodes[0];
+      this.effects.push({type:"spawn", node:this.nodes[0], t:0, dur:1.0});
     }
     this._fitAll();
     this._bindEvents();
@@ -4473,13 +4476,354 @@ class SessionFlow {
     for (const n of this.allNodes) {
       n.opacity += (n.targetOpacity - n.opacity) * 0.08;
     }
+    this._stepPlayback(dt);
     this._drawEdges(this.ctx);
     this._drawNodes(this.ctx);
+    this._drawEffects(this.ctx);
     requestAnimationFrame(() => this._raf());
   }
 
+  _hitTest(sx, sy) {
+    const w = this.screenToWorld(sx, sy);
+    for (let i = this.nodes.length - 1; i >= 0; i--) {
+      const n = this.nodes[i];
+      if (n.opacity < 0.1) continue;
+      const dx = w.x - n.x, dy = w.y - n.y;
+      if (dx*dx + dy*dy < n.r*n.r) return n;
+    }
+    for (let i = this.toolNodes.length - 1; i >= 0; i--) {
+      const n = this.toolNodes[i];
+      if (n.opacity < 0.1) continue;
+      const dx = w.x - n.x, dy = w.y - n.y;
+      if (dx*dx + dy*dy < n.r*n.r) return n;
+    }
+    return null;
+  }
+
+  _updateTooltip(mx, my, node) {
+    const el = document.getElementById("flow-tooltip");
+    if (!el) return;
+    if (!node) { el.style.display = "none"; return; }
+    el.textContent = "";
+    const h = document.createElement("h4");
+    h.style.cssText = "color:#00d4ff;margin:0 0 4px;font-size:12px";
+    h.textContent = node.name;
+    el.appendChild(h);
+    const addRow = (label, val) => {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;justify-content:space-between;gap:12px";
+      const lbl = document.createElement("span");
+      lbl.style.color = "#666"; lbl.textContent = label;
+      const v = document.createElement("span");
+      v.style.color = "#fff"; v.textContent = val;
+      row.appendChild(lbl); row.appendChild(v);
+      el.appendChild(row);
+    };
+    if (node.type === "tool") {
+      addRow("Calls", String(node.count));
+    } else {
+      const d = node.data || {};
+      addRow("Type", d.type || "main");
+      if (d.tokens) addRow("Tokens", ((d.tokens.input+d.tokens.output)/1000).toFixed(1) + "K");
+      if (d.cost != null) addRow("Cost", "$" + d.cost.toFixed(4));
+    }
+    el.style.display = "block";
+    el.style.left = (mx + 15) + "px";
+    el.style.top = (my + 15) + "px";
+  }
+
+  _hideTooltip() {
+    const el = document.getElementById("flow-tooltip");
+    if (el) el.style.display = "none";
+  }
+
+  _scrollToMessage(node) {
+    var evt;
+    if (node.type === "tool") {
+      evt = this.flow.events.find(e => e.type === "tool_call" && e.tool === node.name && e.agent_id === node.parentId);
+    }
+    if (!evt) {
+      evt = this.flow.events.find(e => e.agent_id === node.id);
+    }
+    if (!evt) return;
+    const msgEl = document.getElementById("msg-" + evt.msg_index) || document.getElementById("marker-" + evt.msg_index);
+    if (msgEl) {
+      msgEl.scrollIntoView({behavior: "smooth", block: "center"});
+      msgEl.style.outline = "2px solid #00d4ff";
+      setTimeout(() => { msgEl.style.outline = ""; }, 2000);
+    }
+  }
+
+  _compressTime(t, events) {
+    if (!events || events.length === 0) return 0;
+    var compressed = 0, prevT = 0;
+    for (var i = 0; i < events.length; i++) {
+      if (events[i].t > t) break;
+      compressed += Math.max(300, Math.min(2000, events[i].t - prevT));
+      prevT = events[i].t;
+    }
+    compressed += Math.max(0, Math.min(2000, t - prevT));
+    return compressed;
+  }
+
+  _processEvent(evt) {
+    var nodeMap = {};
+    this.allNodes.forEach(function(n) { nodeMap[n.id] = n; });
+    var agent, toolNode, toolId;
+    switch (evt.type) {
+      case "message":
+        agent = nodeMap[evt.agent_id];
+        if (agent) {
+          agent.targetOpacity = 1;
+          this._lastActiveNode = agent;
+          if (evt.role === "user")
+            this.effects.push({type:"pulse", node:agent, t:0, dur:0.8, color:"#00ff88"});
+        }
+        break;
+      case "tool_call":
+        toolId = evt.agent_id + "-tool-" + evt.tool;
+        toolNode = nodeMap[toolId];
+        if (toolNode) {
+          toolNode.targetOpacity = 1;
+          this.effects.push({type:"spawn", node:toolNode, t:0, dur:0.6});
+        }
+        agent = nodeMap[evt.agent_id];
+        if (agent) { agent.targetOpacity = 1; this._lastActiveNode = agent; }
+        break;
+      case "agent_spawn":
+        var newAgent = nodeMap[evt.agent_id];
+        if (newAgent) {
+          newAgent.targetOpacity = 1;
+          this.effects.push({type:"spawn", node:newAgent, t:0, dur:1.0});
+          this._lastActiveNode = newAgent;
+          this._simSettled = false;
+        }
+        break;
+      case "compaction":
+        agent = nodeMap[evt.agent_id];
+        if (agent) this.effects.push({type:"flash", node:agent, t:0, dur:0.5, color:"#ff3344"});
+        break;
+      case "hook":
+        agent = nodeMap[evt.agent_id];
+        if (agent) this.effects.push({type:"flash", node:agent, t:0, dur:0.4, color:"#ffcc00"});
+        break;
+    }
+  }
+
+  _stepPlayback(dt) {
+    if (!this.playing || this.playDone) return;
+    var events = this.flow.events || [];
+    if (events.length === 0) { this.playDone = true; return; }
+    var maxT = events[events.length - 1].t;
+    this.playTime += dt * 1000 * this.playSpeed;
+    while (this.playIndex < events.length) {
+      var playT = this._compressTime(events[this.playIndex].t, events);
+      if (playT > this.playTime) break;
+      this._processEvent(events[this.playIndex]);
+      this.playIndex++;
+    }
+    var prog = document.getElementById("flow-progress");
+    if (prog) {
+      var maxCompressed = this._compressTime(maxT, events);
+      prog.style.width = Math.min(100, (this.playTime / maxCompressed) * 100) + "%";
+    }
+    if (this.playIndex >= events.length) {
+      this.playDone = true;
+      this.allNodes.forEach(function(n) { n.targetOpacity = 1; });
+    }
+    if (!this.userOverride && this._lastActiveNode) {
+      this.cam.tx = this._lastActiveNode.x;
+      this.cam.ty = this._lastActiveNode.y;
+    }
+  }
+
+  _skipToEnd() {
+    this.allNodes.forEach(function(n) { n.opacity = 1; n.targetOpacity = 1; });
+    this.playDone = true;
+    this.playIndex = (this.flow.events || []).length;
+    var prog = document.getElementById("flow-progress");
+    if (prog) prog.style.width = "100%";
+    this._fitAll();
+  }
+
+  _drawEffects(ctx) {
+    var toRemove = [];
+    for (var i = 0; i < this.effects.length; i++) {
+      var fx = this.effects[i];
+      fx.t += 0.016;
+      var progress = fx.t / fx.dur;
+      if (progress > 1) { toRemove.push(i); continue; }
+      var n = fx.node;
+      if (!n || n.opacity < 0.01) continue;
+      var s = this.worldToScreen(n.x, n.y);
+      var r = n.r * this.cam.scale;
+      var color = fx.color || n.color;
+      if (fx.type === "spawn") {
+        var ringR = r * (1 + progress * 1.5);
+        ctx.globalAlpha = (1 - progress) * 0.6;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+        if (progress < 0.3) {
+          ctx.globalAlpha = (1 - progress / 0.3) * 0.4;
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, r * 1.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (fx.type === "pulse") {
+        var pulseR = r + Math.sin(progress * Math.PI) * 15;
+        ctx.globalAlpha = (1 - progress) * 0.5;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        this._hexPath(ctx, s.x, s.y, pulseR);
+        ctx.stroke();
+      } else if (fx.type === "flash") {
+        ctx.globalAlpha = (1 - progress) * 0.7;
+        ctx.save();
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 20;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    ctx.globalAlpha = 1;
+    for (var j = toRemove.length - 1; j >= 0; j--) {
+      this.effects.splice(toRemove[j], 1);
+    }
+  }
+
   _bindEvents() {
+    const c = this.canvas;
     window.addEventListener("resize", () => this._resize());
+
+    c.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 0.92 : 1.08;
+      const newScale = Math.max(0.3, Math.min(3.0, this.cam.scale * factor));
+      const rect = c.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const before = this.screenToWorld(mx, my);
+      this.cam.scale = newScale;
+      const after = this.screenToWorld(mx, my);
+      this.cam.x -= (after.x - before.x);
+      this.cam.y -= (after.y - before.y);
+      this.cam.tx = this.cam.x; this.cam.ty = this.cam.y;
+      this.cam.ts = this.cam.scale;
+      this.userOverride = true;
+    }, {passive: false});
+
+    this._dragDist = 0;
+    this._mouseDownPos = {x:0, y:0};
+
+    c.addEventListener("mousedown", (e) => {
+      const rect = c.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      this._mouseDownPos = {x: mx, y: my};
+      this._dragDist = 0;
+      const hit = this._hitTest(mx, my);
+      if (hit) {
+        this.dragging = hit;
+        hit.fx = hit.x; hit.fy = hit.y;
+        this._simSettled = false;
+      } else {
+        this.panning = true;
+        this.panStart = {x: mx, y: my};
+        this.panCamStart = {x: this.cam.x, y: this.cam.y};
+      }
+    });
+
+    c.addEventListener("mousemove", (e) => {
+      const rect = c.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const ddx = mx - this._mouseDownPos.x, ddy = my - this._mouseDownPos.y;
+      this._dragDist = Math.sqrt(ddx*ddx + ddy*ddy);
+      if (this.dragging) {
+        const w = this.screenToWorld(mx, my);
+        this.dragging.fx = w.x; this.dragging.fy = w.y;
+        this.dragging.x = w.x; this.dragging.y = w.y;
+        this._simSettled = false;
+      } else if (this.panning) {
+        const dx = (mx - this.panStart.x) / this.cam.scale;
+        const dy = (my - this.panStart.y) / this.cam.scale;
+        this.cam.x = this.panCamStart.x - dx;
+        this.cam.y = this.panCamStart.y - dy;
+        this.cam.tx = this.cam.x; this.cam.ty = this.cam.y;
+        this.cam.vx = -dx * 0.1; this.cam.vy = -dy * 0.1;
+        this.userOverride = true;
+      } else {
+        const hit = this._hitTest(mx, my);
+        this.hovered = hit;
+        c.style.cursor = hit ? "pointer" : "grab";
+        this._updateTooltip(mx, my, hit);
+      }
+    });
+
+    c.addEventListener("mouseup", () => {
+      if (this.dragging) {
+        this.dragging.fx = null; this.dragging.fy = null;
+        this._simSettled = false;
+        this.dragging = null;
+      }
+      if (this.panning) {
+        this.cam.tx = this.cam.x + this.cam.vx * 5;
+        this.cam.ty = this.cam.y + this.cam.vy * 5;
+      }
+      this.panning = false;
+    });
+
+    c.addEventListener("mouseleave", () => {
+      this.hovered = null;
+      this._hideTooltip();
+    });
+
+    c.addEventListener("click", (e) => {
+      if (this._dragDist > 5) return;
+      const rect = c.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const hit = this._hitTest(mx, my);
+      this.selected = hit;
+      if (hit) this._scrollToMessage(hit);
+    });
+
+    const fitBtn = document.getElementById("flow-fit");
+    if (fitBtn) fitBtn.addEventListener("click", () => this._fitAll());
+
+    var self = this;
+    var playBtn = document.getElementById("flow-play");
+    if (playBtn) playBtn.addEventListener("click", function() {
+      self.playing = !self.playing;
+      playBtn.textContent = self.playing ? "\u25B6" : "\u23F8";
+    });
+
+    document.querySelectorAll(".speed-btn").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        var speed = parseInt(btn.dataset.speed);
+        if (speed === 0) { self._skipToEnd(); return; }
+        self.playSpeed = speed;
+        document.querySelectorAll(".speed-btn").forEach(function(b) { b.classList.remove("active"); });
+        btn.classList.add("active");
+      });
+    });
+
+    var progBar = document.querySelector(".flow-progress");
+    if (progBar) progBar.addEventListener("click", function(e) {
+      var rect = progBar.getBoundingClientRect();
+      var pct = (e.clientX - rect.left) / rect.width;
+      var events = self.flow.events || [];
+      if (events.length === 0) return;
+      var maxT = self._compressTime(events[events.length - 1].t, events);
+      self.playTime = pct * maxT;
+      self.playIndex = 0;
+      self.allNodes.forEach(function(n) { n.opacity = 0; n.targetOpacity = 0; });
+      self.effects = [];
+      self._stepPlayback(0);
+    });
   }
 }
 
@@ -4490,6 +4834,22 @@ if (FLOW && FLOW.agents && FLOW.agents.length > 0) {
     window._sessionFlow = new SessionFlow(fc, FLOW, cp);
   }
 }
+
+document.querySelectorAll(".msg,.marker").forEach(function(el) {
+  el.addEventListener("click", function() {
+    if (!window._sessionFlow) return;
+    var idx = parseInt((el.id || "").replace(/\D/g, ""));
+    if (isNaN(idx)) return;
+    var sf = window._sessionFlow;
+    var evt = sf.flow.events.find(function(e) { return e.msg_index === idx; });
+    if (!evt) return;
+    var node = sf.allNodes.find(function(n) { return n.id === evt.agent_id; });
+    if (node) {
+      sf.selected = node;
+      sf.effects.push({type:"pulse", node:node, t:0, dur:1.0});
+    }
+  });
+});
 </script>
 </body>
 </html>'''
