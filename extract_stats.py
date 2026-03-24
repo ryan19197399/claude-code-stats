@@ -3972,6 +3972,524 @@ sideHtml += '<div class="sidebar-card"><h4>Metadata</h4>' +
   '<div class="sidebar-row"><span class="label">File Size</span><span class="val">'+sess.file_size_mb+' MB</span></div>' +
   '</div>';
 sideEl.innerHTML = sideHtml;
+
+class SessionFlow {
+  constructor(canvas, flowData, chatContainer) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.flow = flowData;
+    this.chat = chatContainer;
+    this.dpr = window.devicePixelRatio || 1;
+    this.W = 0; this.H = 0;
+    // Camera
+    this.cam = {x:0, y:0, scale:1, tx:0, ty:0, ts:1, vx:0, vy:0};
+    // Nodes and edges (populated later)
+    this.nodes = []; this.edges = []; this.toolNodes = [];
+    // Particles
+    this.bgParticles = [];
+    this.edgeParticles = [];
+    // Effects queue
+    this.effects = [];
+    // Interaction state
+    this.hovered = null; this.selected = null;
+    this.dragging = null; this.panning = false;
+    this.panStart = {x:0,y:0}; this.panCamStart = {x:0,y:0};
+    this.userOverride = false;
+    // Auto-play state
+    this.playing = true; this.playSpeed = 1;
+    this.playTime = 0; this.playIndex = 0;
+    this.playDone = false;
+    // Sprite cache
+    this.sprites = {};
+    // Hex grid params
+    this.hexSize = 30;
+    // Init
+    this._resize();
+    this._initBgParticles(60);
+    this._preRenderSprites();
+    this._initGraph();
+    if (!this.flow.events || this.flow.events.length === 0) {
+      this.allNodes.forEach(n => { n.opacity = 1; n.targetOpacity = 1; });
+      this.playDone = true;
+    } else {
+      this.allNodes.forEach(n => { n.targetOpacity = 1; });
+    }
+    this._fitAll();
+    this._bindEvents();
+    this._raf();
+  }
+
+  _resize() {
+    const r = this.canvas.parentElement.getBoundingClientRect();
+    this.W = r.width; this.H = r.height;
+    this.canvas.width = this.W * this.dpr;
+    this.canvas.height = this.H * this.dpr;
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+  }
+
+  _initBgParticles(n) {
+    this.bgParticles = [];
+    for (let i = 0; i < n; i++) {
+      this.bgParticles.push({
+        x: Math.random() * 2000 - 1000,
+        y: Math.random() * 2000 - 1000,
+        r: Math.random() * 1.5 + 0.3,
+        a: Math.random() * 0.3 + 0.05,
+        vx: (Math.random() - 0.5) * 0.15,
+        vy: (Math.random() - 0.5) * 0.15
+      });
+    }
+  }
+
+  _preRenderSprites() {
+    const sz = 32;
+    const colors = [
+      ["glow", "0,212,255"],
+      ["glowOrange", "255,136,0"],
+      ["glowMagenta", "255,0,170"],
+      ["glowGreen", "0,255,136"]
+    ];
+    for (const [name, rgb] of colors) {
+      const c = document.createElement("canvas");
+      c.width = sz; c.height = sz;
+      const g = c.getContext("2d");
+      const gr = g.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+      gr.addColorStop(0, "rgba(255,255,255,0.9)");
+      gr.addColorStop(0.3, "rgba(" + rgb + ",0.4)");
+      gr.addColorStop(1, "rgba(" + rgb + ",0)");
+      g.fillStyle = gr; g.fillRect(0,0,sz,sz);
+      this.sprites[name] = c;
+    }
+  }
+
+  worldToScreen(wx, wy) {
+    return {
+      x: (wx - this.cam.x) * this.cam.scale + this.W / 2,
+      y: (wy - this.cam.y) * this.cam.scale + this.H / 2
+    };
+  }
+  screenToWorld(sx, sy) {
+    return {
+      x: (sx - this.W / 2) / this.cam.scale + this.cam.x,
+      y: (sy - this.H / 2) / this.cam.scale + this.cam.y
+    };
+  }
+
+  _hexPath(ctx, cx, cy, r) {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = Math.PI / 3 * i - Math.PI / 6;
+      const px = cx + r * Math.cos(a), py = cy + r * Math.sin(a);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+  }
+
+  _diamondPath(ctx, cx, cy, r) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - r);
+    ctx.lineTo(cx + r * 0.7, cy);
+    ctx.lineTo(cx, cy + r);
+    ctx.lineTo(cx - r * 0.7, cy);
+    ctx.closePath();
+  }
+
+  _drawHexGrid(ctx) {
+    const s = this.hexSize;
+    const w = s * Math.sqrt(3), h = s * 1.5;
+    const tl = this.screenToWorld(0, 0);
+    const br = this.screenToWorld(this.W, this.H);
+    const startCol = Math.floor(tl.x / w) - 1;
+    const endCol = Math.ceil(br.x / w) + 1;
+    const startRow = Math.floor(tl.y / h) - 1;
+    const endRow = Math.ceil(br.y / h) + 1;
+
+    ctx.strokeStyle = "rgba(30,30,60,0.3)";
+    ctx.lineWidth = 0.5;
+    for (let row = startRow; row <= endRow; row++) {
+      for (let col = startCol; col <= endCol; col++) {
+        const ox = row % 2 === 0 ? 0 : w / 2;
+        const cx = col * w + ox;
+        const cy = row * h;
+        const sc = this.worldToScreen(cx, cy);
+        const sr = s * this.cam.scale;
+        if (sr < 3) continue;
+        this._hexPath(ctx, sc.x, sc.y, sr);
+        ctx.stroke();
+      }
+    }
+  }
+
+  _drawBgParticles(ctx) {
+    for (const p of this.bgParticles) {
+      p.x += p.vx; p.y += p.vy;
+      const sc = this.worldToScreen(p.x, p.y);
+      ctx.globalAlpha = p.a;
+      ctx.fillStyle = "#4444aa";
+      ctx.beginPath();
+      ctx.arc(sc.x, sc.y, p.r * this.cam.scale, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _drawBackground(ctx) {
+    ctx.fillStyle = "#0a0a0f";
+    ctx.fillRect(0, 0, this.W, this.H);
+    this._drawHexGrid(ctx);
+    this._drawBgParticles(ctx);
+  }
+
+  _initGraph() {
+    const agents = this.flow.agents || [];
+    const flowEdges = this.flow.edges || [];
+    this.nodes = [];
+    this.edges = [];
+    this.toolNodes = [];
+    const nodeMap = {};
+
+    agents.forEach((a, i) => {
+      const node = {
+        id: a.id, name: a.name, type: a.type === "main" ? "main" : "subagent",
+        parentId: a.parent_id, data: a,
+        x: (Math.random() - 0.5) * 200, y: (Math.random() - 0.5) * 200,
+        vx: 0, vy: 0, fx: null, fy: null,
+        r: a.type === "main" ? 50 : 35,
+        color: a.type === "main" ? "#00d4ff" : "#ff00aa",
+        opacity: 0, targetOpacity: 0,
+        scanPhase: Math.random() * Math.PI * 2,
+        glowPulse: Math.random() * Math.PI * 2
+      };
+      this.nodes.push(node);
+      nodeMap[a.id] = node;
+    });
+
+    agents.forEach(a => {
+      const parent = nodeMap[a.id];
+      if (!parent) return;
+      const tools = a.tools_summary || {};
+      Object.entries(tools).forEach(([name, count]) => {
+        if (name === "Agent") return;
+        const tn = {
+          id: a.id + "-tool-" + name, name: name, type: "tool",
+          parentId: a.id, count: count,
+          x: parent.x + (Math.random() - 0.5) * 100,
+          y: parent.y + (Math.random() - 0.5) * 100,
+          vx: 0, vy: 0, fx: null, fy: null,
+          r: 20, color: "#ff8800",
+          opacity: 0, targetOpacity: 0,
+          glowPulse: Math.random() * Math.PI * 2
+        };
+        this.toolNodes.push(tn);
+        nodeMap[tn.id] = tn;
+        this.edges.push({from: parent, to: tn, type: "tool", particles: []});
+      });
+    });
+
+    flowEdges.forEach(e => {
+      const from = nodeMap[e.from], to = nodeMap[e.to];
+      if (from && to) {
+        this.edges.push({from, to, type: "dispatch", particles: []});
+      }
+    });
+
+    this.allNodes = [...this.nodes, ...this.toolNodes];
+  }
+
+  _stepSimulation() {
+    const nodes = this.allNodes.filter(n => n.opacity > 0.01);
+    if (nodes.length === 0) return;
+    const CHARGE = -800, LINK_DIST = 250, TOOL_DIST = 120;
+    const CENTER = 0.03, DECAY = 0.4, COLLISION = 20;
+
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) d2 = 1;
+        const f = CHARGE / d2;
+        const fx = dx / Math.sqrt(d2) * f, fy = dy / Math.sqrt(d2) * f;
+        a.vx -= fx; a.vy -= fy;
+        b.vx += fx; b.vy += fy;
+      }
+    }
+
+    for (const e of this.edges) {
+      if (e.from.opacity < 0.01 || e.to.opacity < 0.01) continue;
+      const dx = e.to.x - e.from.x, dy = e.to.y - e.from.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 1;
+      const target = e.type === "tool" ? TOOL_DIST : LINK_DIST;
+      const f = (d - target) * 0.05;
+      const fx = dx / d * f, fy = dy / d * f;
+      e.from.vx += fx; e.from.vy += fy;
+      e.to.vx -= fx; e.to.vy -= fy;
+    }
+
+    for (const n of nodes) {
+      n.vx -= n.x * CENTER;
+      n.vy -= n.y * CENTER;
+    }
+
+    let totalV = 0;
+    for (const n of nodes) {
+      if (n.fx !== null) { n.x = n.fx; n.y = n.fy; n.vx = 0; n.vy = 0; continue; }
+      n.vx *= DECAY; n.vy *= DECAY;
+      n.x += n.vx; n.y += n.vy;
+      totalV += Math.abs(n.vx) + Math.abs(n.vy);
+    }
+
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d = Math.sqrt(dx * dx + dy * dy) || 1;
+        const minD = a.r + b.r + COLLISION;
+        if (d < minD) {
+          const push = (minD - d) / 2;
+          const px = dx / d * push, py = dy / d * push;
+          a.x -= px; a.y -= py;
+          b.x += px; b.y += py;
+        }
+      }
+    }
+
+    this._simSettled = totalV < 0.5;
+  }
+
+  _drawNodes(ctx) {
+    const t = performance.now() / 1000;
+
+    for (const n of this.toolNodes) {
+      if (n.opacity < 0.05) continue;
+      const s = this.worldToScreen(n.x, n.y);
+      const r = n.r * this.cam.scale;
+      ctx.globalAlpha = n.opacity;
+
+      ctx.save();
+      ctx.shadowColor = n.color;
+      ctx.shadowBlur = 15 * this.cam.scale;
+      this._diamondPath(ctx, s.x, s.y, r);
+      ctx.fillStyle = "rgba(255,136,0,0.15)";
+      ctx.fill();
+      ctx.restore();
+
+      this._diamondPath(ctx, s.x, s.y, r);
+      ctx.strokeStyle = n.color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      if (r > 8) {
+        ctx.fillStyle = "#fff";
+        ctx.font = Math.max(9, r * 0.5) + "px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const label = n.count > 1 ? n.name + " x" + n.count : n.name;
+        ctx.fillText(label, s.x, s.y + r + 12);
+      }
+    }
+
+    for (const n of this.nodes) {
+      if (n.opacity < 0.05) continue;
+      const s = this.worldToScreen(n.x, n.y);
+      const r = n.r * this.cam.scale;
+      ctx.globalAlpha = n.opacity;
+
+      ctx.save();
+      ctx.shadowColor = n.color;
+      ctx.shadowBlur = 25 * this.cam.scale;
+      this._hexPath(ctx, s.x, s.y, r * 1.05);
+      ctx.fillStyle = n.color + "10";
+      ctx.fill(); ctx.fill();
+      ctx.restore();
+
+      this._hexPath(ctx, s.x, s.y, r);
+      ctx.fillStyle = "#0d0d1a";
+      ctx.fill();
+
+      ctx.save();
+      this._hexPath(ctx, s.x, s.y, r);
+      ctx.clip();
+      const scanY = s.y - r + ((t * 40 + n.scanPhase * 50) % (r * 2));
+      const scanGrad = ctx.createLinearGradient(s.x, scanY - 20, s.x, scanY + 20);
+      scanGrad.addColorStop(0, "transparent");
+      scanGrad.addColorStop(0.5, n.color + "15");
+      scanGrad.addColorStop(1, "transparent");
+      ctx.fillStyle = scanGrad;
+      ctx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
+      ctx.restore();
+
+      this._hexPath(ctx, s.x, s.y, r);
+      ctx.strokeStyle = n.color + "80";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      const pulse = 0.6 + Math.sin(t * 1.5 + n.glowPulse) * 0.4;
+      this._hexPath(ctx, s.x, s.y, r * 0.85);
+      const pulseHex = Math.round(pulse * 40).toString(16).padStart(2,"0");
+      ctx.strokeStyle = n.color + pulseHex;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      if (r > 15) {
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold " + Math.max(10, r * 0.28) + "px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const icon = n.type === "main" ? "✦" : n.data.type.charAt(0).toUpperCase();
+        ctx.fillText(icon, s.x, s.y - 2);
+        ctx.font = Math.max(9, r * 0.22) + "px monospace";
+        ctx.fillStyle = n.color;
+        const nodeName = n.name.length > 18 ? n.name.slice(0,16) + ".." : n.name;
+        ctx.fillText(nodeName, s.x, s.y + r + 14);
+      }
+
+      if (this.selected === n || this.hovered === n) {
+        this._hexPath(ctx, s.x, s.y, r + 4);
+        ctx.strokeStyle = "#ffffff60";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _cubicBezier(t, p0, p1, p2, p3) {
+    const mt = 1 - t;
+    return {
+      x: mt*mt*mt*p0.x + 3*mt*mt*t*p1.x + 3*mt*t*t*p2.x + t*t*t*p3.x,
+      y: mt*mt*mt*p0.y + 3*mt*mt*t*p1.y + 3*mt*t*t*p2.y + t*t*t*p3.y
+    };
+  }
+
+  _initEdgeParticles(edge) {
+    const n = edge.type === "dispatch" ? 6 : 3;
+    edge.particles = [];
+    for (let i = 0; i < n; i++) {
+      edge.particles.push({
+        t: i / n,
+        speed: 0.003 + Math.random() * 0.002,
+        wobble: Math.random() * Math.PI * 2,
+        wobbleAmp: 2 + Math.random() * 3
+      });
+    }
+  }
+
+  _drawEdges(ctx) {
+    for (const e of this.edges) {
+      const fa = e.from, ta = e.to;
+      if (fa.opacity < 0.05 || ta.opacity < 0.05) continue;
+
+      const sf = this.worldToScreen(fa.x, fa.y);
+      const st = this.worldToScreen(ta.x, ta.y);
+      const alpha = Math.min(fa.opacity, ta.opacity);
+
+      const dx = st.x - sf.x, dy = st.y - sf.y;
+      const d = Math.sqrt(dx*dx + dy*dy) || 1;
+      const nx = -dy/d, ny = dx/d;
+      const off = d * 0.15;
+      const cp1 = {x: sf.x + dx*0.3 + nx*off, y: sf.y + dy*0.3 + ny*off};
+      const cp2 = {x: sf.x + dx*0.7 + nx*off, y: sf.y + dy*0.7 + ny*off};
+
+      ctx.globalAlpha = alpha * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(sf.x, sf.y);
+      ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, st.x, st.y);
+      ctx.strokeStyle = e.type === "dispatch" ? "#00d4ff" : "#ff8800";
+      ctx.lineWidth = e.type === "dispatch" ? 2 : 1.5;
+      ctx.stroke();
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = alpha * 0.15;
+      ctx.beginPath();
+      ctx.moveTo(sf.x, sf.y);
+      ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, st.x, st.y);
+      ctx.strokeStyle = e.type === "dispatch" ? "#00d4ff" : "#ff8800";
+      ctx.lineWidth = 4;
+      ctx.stroke();
+      ctx.restore();
+
+      if (e.particles.length === 0) this._initEdgeParticles(e);
+      const sprite = e.type === "dispatch" ? this.sprites.glow : this.sprites.glowOrange;
+      ctx.globalAlpha = alpha;
+      for (const p of e.particles) {
+        p.t += p.speed * (this.hovered === fa || this.hovered === ta ? 2.5 : 1);
+        if (p.t > 1) p.t -= 1;
+        p.wobble += 0.03;
+
+        const pos = this._cubicBezier(p.t, sf, cp1, cp2, st);
+        const tan = this._cubicBezier(Math.min(1, p.t + 0.01), sf, cp1, cp2, st);
+        const tdx = tan.x - pos.x, tdy = tan.y - pos.y;
+        const tl = Math.sqrt(tdx*tdx + tdy*tdy) || 1;
+        const wobX = -tdy/tl * Math.sin(p.wobble) * p.wobbleAmp;
+        const wobY = tdx/tl * Math.sin(p.wobble) * p.wobbleAmp;
+
+        const sz = 10 * this.cam.scale;
+        ctx.drawImage(sprite, pos.x + wobX - sz/2, pos.y + wobY - sz/2, sz, sz);
+
+        for (let ti = 1; ti <= 3; ti++) {
+          const tt = p.t - ti * 0.015;
+          if (tt < 0) continue;
+          const tp = this._cubicBezier(tt, sf, cp1, cp2, st);
+          ctx.globalAlpha = alpha * (1 - ti * 0.3);
+          ctx.drawImage(sprite, tp.x - sz*0.3, tp.y - sz*0.3, sz*0.6, sz*0.6);
+        }
+        ctx.globalAlpha = alpha;
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _fitAll() {
+    const visible = this.allNodes.filter(n => n.opacity > 0.1);
+    if (visible.length === 0) return;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of visible) {
+      minX = Math.min(minX, n.x - n.r);
+      maxX = Math.max(maxX, n.x + n.r);
+      minY = Math.min(minY, n.y - n.r);
+      maxY = Math.max(maxY, n.y + n.r);
+    }
+    const pad = 80;
+    const cw = maxX - minX + pad * 2, ch = maxY - minY + pad * 2;
+    this.cam.tx = (minX + maxX) / 2;
+    this.cam.ty = (minY + maxY) / 2;
+    this.cam.ts = Math.min(this.W / cw, this.H / ch, 2.0);
+    this.userOverride = false;
+  }
+
+  _raf() {
+    const now = performance.now();
+    const dt = this._lastFrame ? (now - this._lastFrame) / 1000 : 0.016;
+    this._lastFrame = now;
+    this._resize();
+    this.cam.x += (this.cam.tx - this.cam.x) * 0.08;
+    this.cam.y += (this.cam.ty - this.cam.y) * 0.08;
+    this.cam.scale += (this.cam.ts - this.cam.scale) * 0.08;
+    this.ctx.clearRect(0, 0, this.W, this.H);
+    this._drawBackground(this.ctx);
+    if (!this._simSettled) this._stepSimulation();
+    for (const n of this.allNodes) {
+      n.opacity += (n.targetOpacity - n.opacity) * 0.08;
+    }
+    this._drawEdges(this.ctx);
+    this._drawNodes(this.ctx);
+    requestAnimationFrame(() => this._raf());
+  }
+
+  _bindEvents() {
+    window.addEventListener("resize", () => this._resize());
+  }
+}
+
+if (FLOW && FLOW.agents && FLOW.agents.length > 0) {
+  const fc = document.getElementById("flow-canvas");
+  const cp = document.querySelector(".chat-panel");
+  if (fc && cp) {
+    window._sessionFlow = new SessionFlow(fc, FLOW, cp);
+  }
+}
 </script>
 </body>
 </html>'''
