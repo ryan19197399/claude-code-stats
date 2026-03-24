@@ -14,7 +14,7 @@ Add an interactive, animated Canvas 2D flow visualization to the session replay 
 - Show agent hierarchy (main agent + sub-agents) and tool usage at a glance
 - Look impressive and cool — holographic glow, animated particles, force-directed layout
 - Integrate seamlessly with the existing chat replay below it
-- Zero external dependencies (Vanilla JS, inline in generated HTML)
+- No additional external dependencies (Vanilla JS, inline in generated HTML — existing highlight.js CDN usage unchanged)
 
 ## Layout Integration
 
@@ -37,9 +37,37 @@ Add an interactive, animated Canvas 2D flow visualization to the session replay 
 ```
 
 - Flow canvas sits above the existing chat list (left column)
-- Resizable divider between canvas and chat
+- Fixed 40/60 split (no resizable divider in v1 — keeps implementation simple)
 - Sidebar remains unchanged on the right
 - Bidirectional linking: click node → chat scrolls; click chat message → node pulses
+
+### DOM Structure Change
+
+The existing `.chat-panel` div (which contains toolbar + messages) gets wrapped in a new parent:
+
+```html
+<div class="left-column">
+  <div class="flow-container" style="height: 40%">
+    <canvas id="flow-canvas"></canvas>
+    <!-- toolbar overlay is positioned absolute inside -->
+  </div>
+  <div class="chat-panel" style="height: 60%">
+    <!-- existing toolbar + messages, unchanged -->
+  </div>
+</div>
+```
+
+The existing `grid-template-columns: 2fr 1fr` on `.main-layout` stays the same. The left cell just changes from `.chat-panel` to `.left-column` which uses `display: flex; flex-direction: column`.
+
+### Responsive Behavior
+
+- **< 1000px (mobile):** Flow canvas is hidden by default. A "Show Flow" toggle button appears above the chat panel. When toggled, canvas shows at 50% height, chat at 50%.
+- **1000-1400px:** Canvas at 35% height, chat at 65% (more room for chat on smaller desktops).
+- **> 1400px:** Canvas at 40%, chat at 60% (default).
+
+### Chat Anchor IDs
+
+Each `.msg` div in the chat list gets an `id="msg-{i}"` attribute (where `i` is the message index). Each `.marker` div gets `id="marker-{i}"`. This enables `scrollIntoView()` from canvas click handlers.
 
 ## Visual Style: Holographic / Sci-Fi
 
@@ -74,7 +102,7 @@ Add an interactive, animated Canvas 2D flow visualization to the session replay 
 | Sub-Agent | Hexagon | Magenta | Medium (r=35) | Agent type badge, name label |
 | Tool Call | Diamond/Rhombus | Orange | Small (r=20) | Tool icon, name. Grouped: "Read x5" |
 
-- **Tool grouping:** Multiple calls to the same tool from one agent collapse into a single node with a count badge. Expanding on click shows individual calls.
+- **Tool grouping:** Multiple calls to the same tool from one agent collapse into a single node with a count badge. Hover shows a tooltip listing individual calls (file paths, commands). No expand/collapse of nodes in v1 — keeps the force layout stable.
 
 ### Ephemeral Elements (animated, not graph nodes)
 
@@ -166,7 +194,7 @@ Collision:           radius = node_radius + 20,  prevent overlap
 
 ### Graph Construction (Python side — extract_stats.py)
 
-Extend the existing `extract_session_messages()` to also build a graph structure:
+Add a new function `build_session_flow(messages)` that takes the flat message list from `extract_session_messages()` and constructs a graph:
 
 ```python
 session_flow = {
@@ -181,7 +209,7 @@ session_flow = {
             "tools_summary": {"Read": 5, "Edit": 3, "Bash": 2}
         },
         {
-            "id": "subagent-abc123",
+            "id": "subagent-0",
             "name": "Explore codebase",
             "type": "Explore",
             "parent_id": "main",
@@ -194,12 +222,12 @@ session_flow = {
         {"type": "message", "agent_id": "main", "role": "user", "t": 0, "msg_index": 0},
         {"type": "message", "agent_id": "main", "role": "assistant", "t": 1200, "msg_index": 1},
         {"type": "tool_call", "agent_id": "main", "tool": "Read", "detail": "src/main.py", "t": 1500, "msg_index": 1},
-        {"type": "agent_spawn", "agent_id": "subagent-abc123", "parent_id": "main", "t": 2000, "msg_index": 2},
+        {"type": "agent_spawn", "agent_id": "subagent-0", "parent_id": "main", "t": 2000, "msg_index": 2},
         {"type": "compaction", "agent_id": "main", "t": 5000, "msg_index": 10},
         {"type": "hook", "agent_id": "main", "hook_name": "pre-commit", "t": 6000, "msg_index": 12}
     ],
     "edges": [
-        {"from": "main", "to": "subagent-abc123", "type": "dispatch"}
+        {"from": "main", "to": "subagent-0", "type": "dispatch"}
     ]
 }
 ```
@@ -207,6 +235,32 @@ session_flow = {
 - `t` values are milliseconds relative to session start (for timeline positioning)
 - `msg_index` links to the chat message list for bidirectional navigation
 - Events are sorted chronologically
+
+### Graph Construction Algorithm
+
+**Agent ID generation:** Sub-agent IDs are synthetic: `subagent-{N}` where N is the zero-based index of the Agent tool_use in the message list. The JSONL data does not provide stable unique IDs for sub-agents.
+
+**Agent attribution logic:**
+
+1. Start with a single "main" agent.
+2. Walk the message list sequentially. All messages and tool calls belong to "main" by default.
+3. When an assistant message contains an `Agent` tool_use:
+   - Create a new agent entry with `id = f"subagent-{counter}"`, `name` = agent description, `type` = agent_type, `parent_id` = current agent.
+   - Emit an `agent_spawn` event.
+   - Add an edge `{from: parent_id, to: new_agent_id, type: "dispatch"}`.
+   - The sub-agent's tokens and cost are NOT attributable from the parent session's message list (sub-agents run in separate processes with their own JSONL). Set tokens/cost to `null` unless sub-agent session data is available.
+4. For each assistant message: sum its tokens into the "main" agent's totals. Emit tool_call events for each tool in the message's `tools` array.
+5. For compaction/hook markers: emit the corresponding event type with `agent_id = "main"`.
+
+**Tool-to-agent edges:** The `edges` array only contains agent-to-agent dispatch links. Tool node positions and tool-to-agent edges are derived client-side from each agent's `tools_summary` dictionary.
+
+### Embedding in HTML
+
+The flow data is embedded as a JSON object alongside the existing session message data. Use the same placeholder replacement pattern as the existing session data:
+
+```javascript
+const FLOW = "__FLOW_DATA__";  // replaced by Python: html.replace('"__FLOW_DATA__"', flow_json)
+```
 
 ### Embedding in HTML
 
@@ -218,7 +272,7 @@ const FLOW = __FLOW_DATA__;  // replaced by Python at generation time
 
 ## JavaScript Architecture
 
-Single self-contained class `SessionFlow` (~1000-1500 lines), structured as:
+Single self-contained class `SessionFlow` (~2000-2500 lines), structured as:
 
 ```
 SessionFlow
