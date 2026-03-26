@@ -4953,7 +4953,7 @@ class SessionFlow {
       ctx.globalAlpha = userNode.opacity * umAlpha;
       ctx.fillStyle = '#00ff88';
       ctx.textAlign = 'left';
-      ctx.fillText(this._userMsgCount + '', us.x + ur + 6, us.y - ur * 0.5);
+      ctx.fillText(this._userMsgCount + '', us.x + ur + 8, us.y - ur * 0.5);
     }
 
     // Assistant message count - anchored to left edge of Claude node
