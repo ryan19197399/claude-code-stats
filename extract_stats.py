@@ -4189,8 +4189,8 @@ class SessionFlow {
       const node = {
         id: a.id, name: a.name, type: isUser ? 'user' : (isMain ? 'main' : 'subagent'),
         parentId: a.parent_id, data: a,
-        x: isUser ? -250 : (Math.random() - 0.5) * 200,
-        y: isUser ? 0 : (Math.random() - 0.5) * 200,
+        x: isUser ? -250 : (isMain ? 0 : 150 + (Math.random() - 0.5) * 100),
+        y: isUser ? 0 : (isMain ? 0 : (Math.random() - 0.5) * 200),
         vx: 0, vy: 0,
         fx: isUser ? -250 : null,
         fy: isUser ? 0 : null,
@@ -4214,7 +4214,7 @@ class SessionFlow {
         const tn = {
           id: a.id + "-tool-" + name, name: name, type: "tool",
           parentId: a.id, count: count,
-          x: parent.x + (Math.random() - 0.5) * 100,
+          x: parent.x + 80 + Math.random() * 80,
           y: parent.y + (Math.random() - 0.5) * 100,
           vx: 0, vy: 0, fx: null, fy: null,
           r: 20, color: "#ff8800",
@@ -4274,6 +4274,22 @@ class SessionFlow {
     for (const n of nodes) {
       n.vx -= n.x * CENTER;
       n.vy -= n.y * CENTER;
+    }
+
+    // Push tools and sub-agents to the right of main agent
+    for (var ni = 0; ni < nodes.length; ni++) {
+      var node = nodes[ni];
+      if (node.type === 'user' || node.type === 'main') continue;
+      // Gentle rightward force
+      node.vx += 0.3;
+      // Also push away from user node (left side)
+      var userNode = this.nodeMap ? this.nodeMap['user'] : null;
+      if (userNode) {
+        var udx = node.x - userNode.x;
+        if (udx < 150) {
+          node.vx += (150 - udx) * 0.01;
+        }
+      }
     }
 
     let totalV = 0;
