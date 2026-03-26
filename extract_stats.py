@@ -4022,6 +4022,7 @@ class SessionFlow {
     this.playDone = false;
     this.showAll = false;
     this.convEdgeOpacity = 0;
+    this.responseEdgeOpacity = 0;
     // Sprite cache
     this.sprites = {};
     // Hex grid params
@@ -4544,6 +4545,31 @@ class SessionFlow {
       ctx.stroke();
       ctx.restore();
 
+      // Draw response edge (Claude → User) if active
+      if (e.type === 'conversation' && this.responseEdgeOpacity > 0.01) {
+        // Reverse direction: from target (main agent) to source (user), curving the opposite way
+        var rcp1 = {x: sf.x + dx*0.3 - nx*off, y: sf.y + dy*0.3 - ny*off};
+        var rcp2 = {x: sf.x + dx*0.7 - nx*off, y: sf.y + dy*0.7 - ny*off};
+        ctx.globalAlpha = alpha * this.responseEdgeOpacity * 0.3;
+        ctx.beginPath();
+        ctx.moveTo(st.x, st.y);
+        ctx.bezierCurveTo(rcp2.x, rcp2.y, rcp1.x, rcp1.y, sf.x, sf.y);
+        ctx.strokeStyle = '#00d4ff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // Glow
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = alpha * this.responseEdgeOpacity * 0.15;
+        ctx.beginPath();
+        ctx.moveTo(st.x, st.y);
+        ctx.bezierCurveTo(rcp2.x, rcp2.y, rcp1.x, rcp1.y, sf.x, sf.y);
+        ctx.strokeStyle = '#00d4ff';
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // Only draw permanent particles for dispatch/tool edges, not conversation
       if (e.type !== 'conversation') {
         if (e.particles.length === 0) this._initEdgeParticles(e);
@@ -4667,6 +4693,11 @@ class SessionFlow {
       this.convEdgeOpacity *= 0.97; // slow fade
     } else if (!this.showAll) {
       this.convEdgeOpacity = 0;
+    }
+    if (!this.showAll && this.responseEdgeOpacity > 0.01) {
+      this.responseEdgeOpacity *= 0.97;
+    } else if (!this.showAll) {
+      this.responseEdgeOpacity = 0;
     }
     this._stepPlayback(dt);
     this._drawEdges(this.ctx);
@@ -4798,6 +4829,7 @@ class SessionFlow {
                 color: '#00d4ff',
                 particles: 3
               });
+              this.responseEdgeOpacity = 1;
             }
           }
         }
@@ -4885,6 +4917,7 @@ class SessionFlow {
     this.playDone = true;
     this.playIndex = (this.flow.events || []).length;
     this.convEdgeOpacity = 0.3;
+    this.responseEdgeOpacity = 0.3;
     var prog = document.getElementById("flow-progress");
     if (prog) prog.style.width = "100%";
     this._fitAll();
