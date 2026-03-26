@@ -4569,32 +4569,7 @@ class SessionFlow {
         ctx.restore();
       }
 
-      // Draw message counters along conversation edges
-      if (e.type === 'conversation') {
-        if (this._userMsgCount > 0) {
-          var umPos = this._cubicBezier(0.12, sf, cp1, cp2, st);
-          var umAlpha = this.convEdgeOpacity > 0.1 ? 0.8 : 0.35;
-          ctx.globalAlpha = alpha * umAlpha;
-          ctx.font = '10px monospace';
-          ctx.fillStyle = '#00ff88';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(this._userMsgCount + '', umPos.x, umPos.y - 10);
-        }
-        if (this._assistantMsgCount > 0) {
-          var rcp1b = {x: sf.x + dx*0.3 - nx*off, y: sf.y + dy*0.3 - ny*off};
-          var rcp2b = {x: sf.x + dx*0.7 - nx*off, y: sf.y + dy*0.7 - ny*off};
-          var amPos = this._cubicBezier(0.12, st, rcp1b, rcp2b, sf);
-          var amAlpha = this.responseEdgeOpacity > 0.1 ? 0.8 : 0.35;
-          ctx.globalAlpha = alpha * amAlpha;
-          ctx.font = '10px monospace';
-          ctx.fillStyle = '#00d4ff';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(this._assistantMsgCount + '', amPos.x, amPos.y + 10);
-        }
-        ctx.globalAlpha = 1;
-      }
+      // Message counters drawn in _drawMessageCounters() after nodes
 
       // Only draw permanent particles for dispatch/tool edges, not conversation
       if (e.type !== 'conversation') {
@@ -4728,6 +4703,7 @@ class SessionFlow {
     this._stepPlayback(dt);
     this._drawEdges(this.ctx);
     this._drawNodes(this.ctx);
+    this._drawMessageCounters(this.ctx);
     this._drawEffects(this.ctx, dt);
     requestAnimationFrame(() => this._raf());
   }
@@ -4958,6 +4934,40 @@ class SessionFlow {
     var prog = document.getElementById("flow-progress");
     if (prog) prog.style.width = "100%";
     this._fitAll();
+  }
+
+  _drawMessageCounters(ctx) {
+    // Draw message counters anchored to node edges, rendered above nodes
+    var userNode = this.nodeMap ? this.nodeMap['user'] : null;
+    var mainNode = this.nodeMap ? this.nodeMap['main'] : null;
+    if (!userNode || !mainNode || userNode.opacity < 0.05 || mainNode.opacity < 0.05) return;
+
+    ctx.font = '10px monospace';
+    ctx.textBaseline = 'middle';
+
+    // User message count - anchored to right edge of User node
+    if (this._userMsgCount > 0) {
+      var us = this.worldToScreen(userNode.x, userNode.y);
+      var ur = userNode.r * this.cam.scale;
+      var umAlpha = this.convEdgeOpacity > 0.1 ? 0.8 : 0.35;
+      ctx.globalAlpha = userNode.opacity * umAlpha;
+      ctx.fillStyle = '#00ff88';
+      ctx.textAlign = 'left';
+      ctx.fillText(this._userMsgCount + '', us.x + ur + 6, us.y - ur * 0.5);
+    }
+
+    // Assistant message count - anchored to left edge of Claude node
+    if (this._assistantMsgCount > 0) {
+      var ms = this.worldToScreen(mainNode.x, mainNode.y);
+      var mr = mainNode.r * this.cam.scale;
+      var amAlpha = this.responseEdgeOpacity > 0.1 ? 0.8 : 0.35;
+      ctx.globalAlpha = mainNode.opacity * amAlpha;
+      ctx.fillStyle = '#00d4ff';
+      ctx.textAlign = 'right';
+      ctx.fillText(this._assistantMsgCount + '', ms.x - mr - 6, ms.y + mr * 0.5);
+    }
+
+    ctx.globalAlpha = 1;
   }
 
   _drawEffects(ctx, dt) {
