@@ -4736,6 +4736,13 @@ class SessionFlow {
         if (agent) this.effects.push({type:"flash", node:agent, t:0, dur:0.4, color:"#ffcc00"});
         break;
     }
+    // Auto-scroll chat during playback
+    if (evt.msg_index != null && this.playing) {
+      var msgEl = document.getElementById('msg-' + evt.msg_index) || document.getElementById('marker-' + evt.msg_index);
+      if (msgEl) {
+        msgEl.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+      }
+    }
   }
 
   _stepPlayback(dt) {
