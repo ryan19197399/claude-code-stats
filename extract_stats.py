@@ -3712,8 +3712,8 @@ a:hover { text-decoration:underline; }
 .flow-fitall{position:absolute;top:8px;right:8px;z-index:10}
 .flow-fitall button{background:rgba(10,10,15,0.8);color:#8888aa;border:1px solid #1a1a2e;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:11px}
 .flow-fitall button:hover{color:#00d4ff;border-color:#00d4ff40}
-.flow-progress{position:absolute;bottom:0;left:0;right:0;height:3px;background:#0a0a0f;z-index:10;cursor:pointer}
-.flow-progress-bar{height:100%;background:linear-gradient(90deg,#00d4ff,#ff00aa);width:0%;transition:width 0.1s}
+.flow-progress{position:absolute;bottom:0;left:0;right:0;height:10px;background:#0a0a0f;z-index:10;cursor:pointer}
+.flow-progress-bar{height:100%;background:linear-gradient(90deg,#00d4ff,#ff00aa);width:0%;transition:width 0.1s;border-radius:0 2px 2px 0}
 .flow-tooltip{position:absolute;display:none;background:rgba(10,10,15,0.95);border:1px solid #00d4ff40;border-radius:6px;padding:8px 12px;color:#ccc;font-size:11px;pointer-events:none;z-index:20;max-width:280px;backdrop-filter:blur(8px)}
 .flow-toggle{display:none;width:100%;padding:8px;background:#12121f;color:#8888aa;border:none;border-bottom:1px solid #1a1a2e;cursor:pointer;font-size:12px}
 .flow-toggle:hover{color:#00d4ff;background:#15152a}
@@ -3780,11 +3780,13 @@ a:hover { text-decoration:underline; }
     <div class="flow-container">
       <canvas id="flow-canvas"></canvas>
       <div class="flow-toolbar">
+        <button id="flow-rewind" title="Restart">&#9198;</button>
         <button id="flow-play" class="active" title="Play/Pause">&#9654;</button>
         <button class="speed-btn active" data-speed="1">1x</button>
         <button class="speed-btn" data-speed="2">2x</button>
         <button class="speed-btn" data-speed="5">5x</button>
         <button class="speed-btn" data-speed="0" title="Skip to end">&#9199;</button>
+        <button class="speed-btn" id="flow-showall" title="Show all nodes">&#9673;</button>
       </div>
       <div class="flow-fitall"><button id="flow-fit" title="Fit all nodes">&#8982;</button></div>
       <div class="flow-progress"><div class="flow-progress-bar" id="flow-progress"></div></div>
@@ -4016,6 +4018,7 @@ class SessionFlow {
     this.playing = true; this.playSpeed = 1;
     this.playTime = 0; this.playIndex = 0;
     this.playDone = false;
+    this.showAll = false;
     // Sprite cache
     this.sprites = {};
     // Hex grid params
@@ -4149,7 +4152,9 @@ class SessionFlow {
 
   _drawBgParticles(ctx) {
     for (const p of this.bgParticles) {
-      p.x += p.vx; p.y += p.vy;
+      if (this.playing || this.playDone) {
+        p.x += p.vx; p.y += p.vy;
+      }
       const sc = this.worldToScreen(p.x, p.y);
       ctx.globalAlpha = p.a;
       ctx.fillStyle = "#4444aa";
@@ -4189,6 +4194,7 @@ class SessionFlow {
         r: isUser ? 40 : (isMain ? 50 : 35),
         color: isUser ? '#00ff88' : (isMain ? '#00d4ff' : '#ff00aa'),
         opacity: 0, targetOpacity: 0,
+        lastActiveTime: 0,
         scanPhase: Math.random() * Math.PI * 2,
         glowPulse: Math.random() * Math.PI * 2
       };
@@ -4210,6 +4216,7 @@ class SessionFlow {
           vx: 0, vy: 0, fx: null, fy: null,
           r: 20, color: "#ff8800",
           opacity: 0, targetOpacity: 0,
+          lastActiveTime: 0,
           glowPulse: Math.random() * Math.PI * 2
         };
         this.toolNodes.push(tn);
@@ -4500,7 +4507,8 @@ class SessionFlow {
       const sprite = e.type === "dispatch" ? this.sprites.glow : (e.type === "conversation" ? this.sprites.glowGreen : this.sprites.glowOrange);
       ctx.globalAlpha = alpha;
       for (const p of e.particles) {
-        p.t += p.speed * (this.hovered === fa || this.hovered === ta ? 2.5 : 1);
+        var particleSpeed = (this.playing || this.playDone) ? p.speed : 0;
+        p.t += particleSpeed * (this.hovered === fa || this.hovered === ta ? 2.5 : 1);
         if (p.t > 1) p.t -= 1;
         p.wobble += 0.03;
 
@@ -4658,6 +4666,7 @@ class SessionFlow {
         var userNode = nodeMap['user'];
         if (agent) {
           agent.targetOpacity = 1;
+          agent.lastActiveTime = this.playTime;
           this._lastActiveNode = agent;
           if (evt.role === "user") {
             // Pulse user node green and also pulse the main agent (data flowing from user to agent)
@@ -4680,15 +4689,17 @@ class SessionFlow {
         toolNode = nodeMap[toolId];
         if (toolNode) {
           toolNode.targetOpacity = 1;
+          toolNode.lastActiveTime = this.playTime;
           this.effects.push({type:"spawn", node:toolNode, t:0, dur:0.6});
         }
         agent = nodeMap[evt.agent_id];
-        if (agent) { agent.targetOpacity = 1; this._lastActiveNode = agent; }
+        if (agent) { agent.targetOpacity = 1; agent.lastActiveTime = this.playTime; this._lastActiveNode = agent; }
         break;
       case "agent_spawn":
         var newAgent = nodeMap[evt.agent_id];
         if (newAgent) {
           newAgent.targetOpacity = 1;
+          newAgent.lastActiveTime = this.playTime;
           this.effects.push({type:"spawn", node:newAgent, t:0, dur:1.0});
           this._lastActiveNode = newAgent;
           this._simSettled = false;
@@ -4717,6 +4728,17 @@ class SessionFlow {
       this._processEvent(events[this.playIndex]);
       this.playIndex++;
     }
+    // Fade out nodes unused for more than 8 seconds (compressed time)
+    if (!this.showAll) {
+      var fadeThreshold = 8000;
+      for (var ni = 0; ni < this.allNodes.length; ni++) {
+        var node = this.allNodes[ni];
+        if (node.type === 'main' || node.type === 'user') continue; // Never fade main/user
+        if (node.targetOpacity > 0 && this.playTime - node.lastActiveTime > fadeThreshold) {
+          node.targetOpacity = 0.15; // Dim but not invisible
+        }
+      }
+    }
     var prog = document.getElementById("flow-progress");
     if (prog) {
       var maxCompressed = this._compressTime(maxT, events);
@@ -4733,6 +4755,7 @@ class SessionFlow {
   }
 
   _skipToEnd() {
+    this.showAll = true;
     this.allNodes.forEach(function(n) { n.opacity = 1; n.targetOpacity = 1; });
     this.playDone = true;
     this.playIndex = (this.flow.events || []).length;
@@ -4745,7 +4768,7 @@ class SessionFlow {
     var toRemove = [];
     for (var i = 0; i < this.effects.length; i++) {
       var fx = this.effects[i];
-      fx.t += dt;
+      if (this.playing || this.playDone) fx.t += dt;
       var progress = fx.t / fx.dur;
       if (progress > 1) { toRemove.push(i); continue; }
       var n = fx.node;
@@ -4896,9 +4919,46 @@ class SessionFlow {
       playBtn.textContent = self.playing ? "\u25B6" : "\u23F8";
     });
 
+    var showAllBtn = document.getElementById("flow-showall");
+    if (showAllBtn) showAllBtn.addEventListener("click", function() {
+      self.showAll = !self.showAll;
+      showAllBtn.classList.toggle("active", self.showAll);
+      if (self.showAll) {
+        self.allNodes.forEach(function(n) { n.targetOpacity = 1; });
+      }
+    });
+
+    var rewindBtn = document.getElementById("flow-rewind");
+    if (rewindBtn) rewindBtn.addEventListener("click", function() {
+      self.playTime = 0;
+      self.playIndex = 0;
+      self.playDone = false;
+      self.showAll = false;
+      self.effects = [];
+      self.allNodes.forEach(function(n) { n.opacity = 0; n.targetOpacity = 0; });
+      // Show user and main agent immediately
+      if (self.nodes.length > 0) {
+        self.nodes[0].targetOpacity = 1;
+        self.effects.push({type:"spawn", node:self.nodes[0], t:0, dur:1.0});
+      }
+      var userNode = self.allNodes.find(function(n) { return n.id === "user"; });
+      if (userNode) {
+        userNode.targetOpacity = 1;
+        self.effects.push({type:"spawn", node:userNode, t:0, dur:1.0});
+      }
+      self.playing = true;
+      if (playBtn) playBtn.textContent = "\u25B6";
+      var prog = document.getElementById("flow-progress");
+      if (prog) prog.style.width = "0%";
+      self.userOverride = false;
+      self._fitAll();
+      if (showAllBtn) showAllBtn.classList.remove("active");
+    });
+
     document.querySelectorAll(".speed-btn").forEach(function(btn) {
       btn.addEventListener("click", function() {
         var speed = parseInt(btn.dataset.speed);
+        if (isNaN(speed)) return; // skip non-speed buttons like showall
         if (speed === 0) { self._skipToEnd(); return; }
         self.playSpeed = speed;
         document.querySelectorAll(".speed-btn").forEach(function(b) { b.classList.remove("active"); });
