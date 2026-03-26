@@ -4019,6 +4019,8 @@ class SessionFlow {
     this.showAll = false;
     this.convEdgeOpacity = 0;
     this.responseEdgeOpacity = 0;
+    this._userMsgCount = 0;
+    this._assistantMsgCount = 0;
     // Sprite cache
     this.sprites = {};
     // Hex grid params
@@ -4567,6 +4569,33 @@ class SessionFlow {
         ctx.restore();
       }
 
+      // Draw message counters along conversation edges
+      if (e.type === 'conversation') {
+        if (this._userMsgCount > 0) {
+          var umPos = this._cubicBezier(0.4, sf, cp1, cp2, st);
+          var umAlpha = this.convEdgeOpacity > 0.1 ? 0.8 : 0.35;
+          ctx.globalAlpha = alpha * umAlpha;
+          ctx.font = '10px monospace';
+          ctx.fillStyle = '#00ff88';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(this._userMsgCount + '', umPos.x, umPos.y - 10);
+        }
+        if (this._assistantMsgCount > 0) {
+          var rcp1b = {x: sf.x + dx*0.3 - nx*off, y: sf.y + dy*0.3 - ny*off};
+          var rcp2b = {x: sf.x + dx*0.7 - nx*off, y: sf.y + dy*0.7 - ny*off};
+          var amPos = this._cubicBezier(0.4, st, rcp1b, rcp2b, sf);
+          var amAlpha = this.responseEdgeOpacity > 0.1 ? 0.8 : 0.35;
+          ctx.globalAlpha = alpha * amAlpha;
+          ctx.font = '10px monospace';
+          ctx.fillStyle = '#00d4ff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(this._assistantMsgCount + '', amPos.x, amPos.y + 10);
+        }
+        ctx.globalAlpha = 1;
+      }
+
       // Only draw permanent particles for dispatch/tool edges, not conversation
       if (e.type !== 'conversation') {
         if (e.particles.length === 0) this._initEdgeParticles(e);
@@ -4798,6 +4827,7 @@ class SessionFlow {
           agent.lastActiveTime = this.playTime;
           this._lastActiveNode = agent;
           if (evt.role === "user") {
+            this._userMsgCount++;
             // Burst from user to main agent
             if (userNode && agent) {
               userNode.lastActiveTime = this.playTime;
@@ -4814,6 +4844,7 @@ class SessionFlow {
               agent.glowPulse = 0;
             }
           } else if (evt.role === "assistant") {
+            this._assistantMsgCount++;
             // Reverse burst from main agent back to user (response)
             if (userNode) {
               userNode.targetOpacity = 1;
@@ -4917,6 +4948,13 @@ class SessionFlow {
     this.playIndex = (this.flow.events || []).length;
     this.convEdgeOpacity = 0.3;
     this.responseEdgeOpacity = 0.3;
+    this._userMsgCount = 0;
+    this._assistantMsgCount = 0;
+    var evts = this.flow.events || [];
+    for (var ei = 0; ei < evts.length; ei++) {
+      if (evts[ei].type === 'message' && evts[ei].role === 'user') this._userMsgCount++;
+      if (evts[ei].type === 'message' && evts[ei].role === 'assistant') this._assistantMsgCount++;
+    }
     var prog = document.getElementById("flow-progress");
     if (prog) prog.style.width = "100%";
     this._fitAll();
@@ -5116,6 +5154,8 @@ class SessionFlow {
       self.showAll = false;
       self.effects = [];
       self.reverseBursts = [];
+      self._userMsgCount = 0;
+      self._assistantMsgCount = 0;
       self.allNodes.forEach(function(n) { n.opacity = 0; n.targetOpacity = 0; });
       self.toolNodes.forEach(function(n) { n.displayCount = 0; });
       // Show user and main agent immediately
@@ -5157,6 +5197,8 @@ class SessionFlow {
       var maxT = self._compressTime(events[events.length - 1].t, events);
       self.playTime = pct * maxT;
       self.playIndex = 0;
+      self._userMsgCount = 0;
+      self._assistantMsgCount = 0;
       self.allNodes.forEach(function(n) { n.opacity = 0; n.targetOpacity = 0; });
       self.toolNodes.forEach(function(n) { n.displayCount = 0; });
       self.effects = [];
