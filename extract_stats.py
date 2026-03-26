@@ -4010,6 +4010,7 @@ class SessionFlow {
     this.edgeParticles = [];
     // Effects queue
     this.effects = [];
+    this.reverseBursts = [];
     // Interaction state
     this.hovered = null; this.selected = null;
     this.dragging = null; this.panning = false;
@@ -4556,6 +4557,63 @@ class SessionFlow {
       }
     }
     ctx.globalAlpha = 1;
+
+    // Draw reverse bursts (agent → user response particles)
+    var burstsToRemove = [];
+    for (var bi = 0; bi < this.reverseBursts.length; bi++) {
+      var burst = this.reverseBursts[bi];
+      var bFrom = burst.from, bTo = burst.to;
+      if (!bFrom || !bTo || bFrom.opacity < 0.05) { burstsToRemove.push(bi); continue; }
+
+      // Only advance during playback
+      if (this.playing && !this.playDone) {
+        burst.t += burst.speed;
+      }
+
+      if (burst.t >= 1) {
+        // Arrived! Trigger cyan pulse on user node
+        this.effects.push({type:'pulse', node:bTo, t:0, dur:0.8, color:burst.color});
+        burstsToRemove.push(bi);
+        continue;
+      }
+
+      // Draw particles traveling from agent to user (REVERSE direction)
+      // Use the same edge path as the conversation edge but in reverse
+      var sf = this.worldToScreen(bTo.x, bTo.y);  // user (destination visually is source of path)
+      var st = this.worldToScreen(bFrom.x, bFrom.y); // agent (source visually is end of path)
+      var dx = st.x - sf.x, dy = st.y - sf.y;
+      var d = Math.sqrt(dx*dx + dy*dy) || 1;
+      var nx = -dy/d, ny = dx/d;
+      var off = d * 0.15;
+      var cp1 = {x: sf.x + dx*0.3 + nx*off, y: sf.y + dy*0.3 + ny*off};
+      var cp2 = {x: sf.x + dx*0.7 + nx*off, y: sf.y + dy*0.7 + ny*off};
+
+      // The burst.t goes 0→1, but we want particles to go from agent to user
+      // So we draw at position (1 - burst.t) on the forward path
+      var sprite = this.sprites.glow;
+      ctx.globalAlpha = 0.9;
+      for (var pi = 0; pi < burst.particles; pi++) {
+        var pt = 1 - burst.t + pi * 0.04; // slightly spread out particles
+        if (pt < 0 || pt > 1) continue;
+        var pos = this._cubicBezier(pt, sf, cp1, cp2, st);
+        var sz = 12 * this.cam.scale;
+        ctx.drawImage(sprite, pos.x - sz/2, pos.y - sz/2, sz, sz);
+        // Comet trail
+        for (var ti = 1; ti <= 3; ti++) {
+          var tt = pt + ti * 0.02; // trail behind (in forward direction = ahead in reverse)
+          if (tt > 1) continue;
+          var tp = this._cubicBezier(tt, sf, cp1, cp2, st);
+          ctx.globalAlpha = 0.9 * (1 - ti * 0.3);
+          ctx.drawImage(sprite, tp.x - sz*0.3, tp.y - sz*0.3, sz*0.6, sz*0.6);
+        }
+        ctx.globalAlpha = 0.9;
+      }
+    }
+    ctx.globalAlpha = 1;
+    // Remove completed bursts
+    for (var ri = burstsToRemove.length - 1; ri >= 0; ri--) {
+      this.reverseBursts.splice(burstsToRemove[ri], 1);
+    }
   }
 
   _fitAll() {
@@ -4699,10 +4757,17 @@ class SessionFlow {
             }
             this.effects.push({type:"pulse", node:agent, t:0, dur:0.8, color:"#00ff88"});
           } else if (evt.role === "assistant") {
-            // Pulse from agent back toward user (cyan pulse on the user node)
+            // Don't pulse immediately — launch particles that will trigger pulse on arrival
             if (userNode) {
               userNode.targetOpacity = 1;
-              this.effects.push({type:"pulse", node:userNode, t:0, dur:0.8, color:"#00d4ff"});
+              this.reverseBursts.push({
+                from: agent,
+                to: userNode,
+                t: 0,        // progress 0→1
+                speed: 0.02,  // takes ~50 frames to arrive
+                color: '#00d4ff',
+                particles: 3
+              });
             }
           }
         }
@@ -4987,6 +5052,7 @@ class SessionFlow {
       self.playDone = false;
       self.showAll = false;
       self.effects = [];
+      self.reverseBursts = [];
       self.allNodes.forEach(function(n) { n.opacity = 0; n.targetOpacity = 0; });
       // Show user and main agent immediately
       if (self.nodes.length > 0) {
@@ -5029,6 +5095,7 @@ class SessionFlow {
       self.playIndex = 0;
       self.allNodes.forEach(function(n) { n.opacity = 0; n.targetOpacity = 0; });
       self.effects = [];
+      self.reverseBursts = [];
       self.playDone = false;
       var wasPlaying = self.playing;
       self.playing = true;
