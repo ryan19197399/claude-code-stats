@@ -4432,8 +4432,29 @@ class SessionFlow {
           ctx.fillText(icon, s.x, s.y - 2);
           ctx.font = Math.max(9, r * 0.22) + "px monospace";
           ctx.fillStyle = n.color;
-          const nodeName = n.name.length > 18 ? n.name.slice(0,16) + ".." : n.name;
-          ctx.fillText(nodeName, s.x, s.y + r + 14);
+          // Two-line name label
+          var fullName = n.name || '';
+          if (fullName.length <= 20) {
+            ctx.fillText(fullName, s.x, s.y + r + 14);
+          } else {
+            // Split into two lines at a word boundary near the middle
+            var mid = Math.floor(fullName.length / 2);
+            var spaceAfter = fullName.indexOf(' ', mid);
+            var spaceBefore = fullName.lastIndexOf(' ', mid);
+            var splitAt;
+            if (spaceAfter !== -1 && spaceAfter < mid + 10) {
+              splitAt = spaceAfter;
+            } else if (spaceBefore > 0) {
+              splitAt = spaceBefore;
+            } else {
+              splitAt = 20; // No good space found, just cut
+            }
+            var line1 = fullName.slice(0, splitAt);
+            var line2 = fullName.slice(splitAt).trim();
+            if (line2.length > 22) line2 = line2.slice(0, 20) + '..';
+            ctx.fillText(line1, s.x, s.y + r + 12);
+            ctx.fillText(line2, s.x, s.y + r + 24);
+          }
         }
 
         if (this.selected === n || this.hovered === n) {
